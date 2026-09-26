@@ -10,12 +10,12 @@
 
 ## 怎么使用
 
-1. 使用 Xcode 打开 `DiaryApp.xcodeproj`，运行到 iPhone 或模拟器。
-2. 在应用设置中填写 DeepSeek API Key；也可以按需修改接口地址和模型名称。
+1. 使用 Xcode 打开 `DiaryApp.xcodeproj`。iPhone 选择 `DiaryApp` 运行到 iPhone 或模拟器；Mac 选择 `DiaryAppMac` 并运行到 `My Mac`（需要 macOS 14 或更新版本）。
+2. 在应用设置中填写 DeepSeek API Key；也可以按需修改接口地址和模型名称。iPhone 和 Mac 上分别保存设置。
 3. 开始口述。Apple 系统会将语音转成文字，你可以补充或修改原文，再让 AI 整理。
 4. 整理后的日记可以继续编辑并保存。同一天再次口述时，新的内容会合并进当天的日记。
 
-日记以 Markdown 格式保存在设备本地。可在设置中填写坚果云账号和坚果云网页端生成的应用密码，应用会在保存日记后自动上传、打开时同步，也可以手动立即同步；默认 WebDAV 地址为 `https://dav.jianguoyun.com/dav/`，云端文件存放在“留白日记”目录。
+日记以 Markdown 格式保存在设备本地。可在设置中填写坚果云账号和坚果云网页端生成的应用密码，应用会在保存日记后自动上传、打开时同步，也可以手动立即同步；默认 WebDAV 地址为 `https://dav.jianguoyun.com/dav/`，云端文件存放在“留白日记”目录。若要在 iPhone 和 Mac 间共享日记，请在两端分别填写坚果云设置并同步。
 
 ## 关于内容和隐私
 

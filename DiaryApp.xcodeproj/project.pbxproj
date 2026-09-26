@@ -9,6 +9,8 @@
 /* Begin PBXBuildFile section */
 		A10000000000000000000001 /* DiaryApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* DiaryApp.swift */; };
 		A10000000000000000000013 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000014 /* Assets.xcassets */; };
+		A10000000000000000000018 /* DiaryApp.swift in Sources (Mac) */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* DiaryApp.swift */; };
+		A10000000000000000000019 /* Assets.xcassets in Resources (Mac) */ = {isa = PBXBuildFile; fileRef = A10000000000000000000014 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -16,6 +18,9 @@
 		A10000000000000000000003 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A10000000000000000000004 /* DiaryApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DiaryApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000014 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A10000000000000000000015 /* Info-macOS.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Info-macOS.plist"; sourceTree = "<group>"; };
+		A10000000000000000000016 /* DiaryAppMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DiaryAppMac.entitlements; sourceTree = "<group>"; };
+		A10000000000000000000017 /* DiaryAppMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DiaryAppMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -43,6 +48,8 @@
 				A10000000000000000000002 /* DiaryApp.swift */,
 				A10000000000000000000003 /* Info.plist */,
 				A10000000000000000000014 /* Assets.xcassets */,
+				A10000000000000000000015 /* Info-macOS.plist */,
+				A10000000000000000000016 /* DiaryAppMac.entitlements */,
 			);
 			path = DiaryApp;
 			sourceTree = "<group>";
@@ -51,6 +58,7 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000004 /* DiaryApp.app */,
+				A10000000000000000000017 /* DiaryAppMac.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -58,6 +66,21 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		A10000000000000000000020 /* DiaryAppMac */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A10000000000000000000024 /* Build configuration list for PBXNativeTarget "DiaryAppMac" */;
+			buildPhases = (
+				A10000000000000000000021 /* Sources */,
+				A10000000000000000000022 /* Frameworks */,
+				A10000000000000000000023 /* Resources */,
+			);
+			buildRules = ();
+			dependencies = ();
+			name = DiaryAppMac;
+			productName = DiaryAppMac;
+			productReference = A10000000000000000000017 /* DiaryAppMac.app */;
+			productType = "com.apple.product-type.application";
+		};
 		A10000000000000000000009 /* DiaryApp */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = A1000000000000000000000A /* Build configuration list for PBXNativeTarget "DiaryApp" */;
@@ -104,11 +127,30 @@
 			projectRoot = "";
 			targets = (
 				A10000000000000000000009 /* DiaryApp */,
+				A10000000000000000000020 /* DiaryAppMac */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		A10000000000000000000021 /* Sources (Mac) */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (A10000000000000000000018 /* DiaryApp.swift in Sources (Mac) */,);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000000000000000000022 /* Frameworks (Mac) */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A10000000000000000000023 /* Resources (Mac) */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (A10000000000000000000019 /* Assets.xcassets in Resources (Mac) */,);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A1000000000000000000000C /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -149,6 +191,44 @@
 				CLANG_ENABLE_MODULES = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		A10000000000000000000025 /* Debug (Mac) */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = MacAppIcon;
+				CODE_SIGN_ENTITLEMENTS = DiaryApp/DiaryAppMac.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = LV65MJ3XCW;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = DiaryApp/Info-macOS.plist;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.diary.liubai.mac;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A10000000000000000000026 /* Release (Mac) */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = MacAppIcon;
+				CODE_SIGN_ENTITLEMENTS = DiaryApp/DiaryAppMac.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = LV65MJ3XCW;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = DiaryApp/Info-macOS.plist;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.diary.liubai.mac;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
@@ -194,6 +274,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		A10000000000000000000024 /* Build configuration list for PBXNativeTarget "DiaryAppMac" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A10000000000000000000025 /* Debug (Mac) */,
+				A10000000000000000000026 /* Release (Mac) */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		A1000000000000000000000A /* Build configuration list for PBXNativeTarget "DiaryApp" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

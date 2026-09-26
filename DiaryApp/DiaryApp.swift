@@ -2,13 +2,22 @@ import SwiftUI
 import Speech
 import AVFoundation
 import Combine
-import UIKit
 import Security
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 
 @main
 struct DiaryApp: App {
     var body: some Scene {
-        WindowGroup { ContentView() }
+        WindowGroup {
+            ContentView()
+                #if os(macOS)
+                .frame(minWidth: 720, minHeight: 620)
+                #endif
+        }
     }
 }
 
@@ -111,11 +120,13 @@ final class EntryStore: ObservableObject {
         syncMessage = "正在同步…"
         defer { isSyncing = false }
         do {
-            entries = try await NutstoreWebDAV.sync(entries: entries, username: username, password: password)
+            let result = try await NutstoreWebDAV.sync(entries: entries, username: username, password: password)
+            entries = result.entries
             entries.sort { $0.createdAt > $1.createdAt }
             save()
             entries.forEach(saveMarkdown)
-            syncMessage = "同步完成 · \(Date().formatted(.dateTime.hour().minute()))"
+            let unreadableNote = result.unreadableCount > 0 ? " · \(result.unreadableCount) 个文件无法识别" : ""
+            syncMessage = "同步完成 · WebDAV 条目 \(result.webDAVResponseCount) 个 · 文件 \(result.remoteItemCount) 个 · Markdown 日记 \(result.remoteMarkdownCount) 个 · 本机 \(entries.count) 篇\(unreadableNote) · \(Date().formatted(.dateTime.hour().minute()))"
         } catch {
             syncMessage = "同步失败：\(error.localizedDescription)"
         }
@@ -214,6 +225,15 @@ private enum NutstoreError: LocalizedError {
 private struct NutstoreRemoteFile {
     let name: String
     let modifiedAt: Date?
+    let url: URL
+}
+
+private struct NutstoreSyncResult {
+    let entries: [DiaryEntry]
+    let webDAVResponseCount: Int
+    let remoteItemCount: Int
+    let remoteMarkdownCount: Int
+    let unreadableCount: Int
 }
 
 private enum NutstoreWebDAV {
@@ -222,7 +242,7 @@ private enum NutstoreWebDAV {
     private static let markdownFolder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("Markdown", isDirectory: true)
 
-    static func sync(entries: [DiaryEntry], username: String, password: String) async throws -> [DiaryEntry] {
+    static func sync(entries: [DiaryEntry], username: String, password: String) async throws -> NutstoreSyncResult {
         let endpoint = UserDefaults.standard.string(forKey: "nutstore_endpoint") ?? endpoint
         guard let root = URL(string: endpoint), var components = URLComponents(url: root, resolvingAgainstBaseURL: false) else {
             throw NutstoreError.invalidURL
@@ -237,29 +257,38 @@ private enum NutstoreWebDAV {
         }
         try await ensureFolder(folder, username: username, password: password)
         var localEntries = Dictionary(uniqueKeysWithValues: entries.map { (diaryDayKey($0.createdAt), $0) })
-        let remoteFiles = try await listFiles(folder, username: username, password: password)
+        let listing = try await listFiles(folder, username: username, password: password)
+        let remoteFiles = listing.files
+        try FileManager.default.createDirectory(at: markdownFolder, withIntermediateDirectories: true)
+        let markdownFiles = remoteFiles.filter { $0.name.lowercased().hasSuffix(".md") }
+        var unreadableCount = 0
         var remoteNames = Set<String>()
 
-        for remote in remoteFiles where remote.name.hasSuffix(".md") {
+        for remote in markdownFiles {
             remoteNames.insert(remote.name)
             let dayKey = String(remote.name.dropLast(3))
-            guard dayKey.count == 10 else { continue }
+            guard dayKey.count == 10 else {
+                unreadableCount += 1
+                continue
+            }
             let localURL = markdownFolder.appendingPathComponent(remote.name)
             let localEntry = localEntries[dayKey]
             let localDate = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.modificationDate]) as? Date
             let remoteIsNewer = remote.modifiedAt.flatMap { remoteDate in localDate.map { remoteDate.timeIntervalSince($0) > 2 } } ?? false
 
             if localEntry == nil || remoteIsNewer {
-                let markdown = try await download(folder.appendingPathComponent(remote.name), username: username, password: password)
+                let markdown = try await download(remote.url, username: username, password: password)
                 if let entry = parse(markdown, dayKey: dayKey) {
                     localEntries[dayKey] = entry
                     try markdown.write(to: localURL, atomically: true, encoding: .utf8)
+                } else {
+                    unreadableCount += 1
                 }
             } else if let localEntry {
                 let localMarkdown = (try? String(contentsOf: localURL, encoding: .utf8)) ?? localEntry.markdown
-                let remoteMarkdown = try await download(folder.appendingPathComponent(remote.name), username: username, password: password)
+                let remoteMarkdown = try await download(remote.url, username: username, password: password)
                 if remoteMarkdown != localMarkdown {
-                    try await upload(localMarkdown, to: folder.appendingPathComponent(remote.name), username: username, password: password)
+                    try await upload(localMarkdown, to: remote.url, username: username, password: password)
                 }
             }
         }
@@ -267,7 +296,7 @@ private enum NutstoreWebDAV {
         for (dayKey, entry) in localEntries where !remoteNames.contains("\(dayKey).md") {
             try await upload(entry.markdown, to: folder.appendingPathComponent(entry.markdownFileName), username: username, password: password)
         }
-        return Array(localEntries.values)
+        return NutstoreSyncResult(entries: Array(localEntries.values), webDAVResponseCount: listing.responseCount, remoteItemCount: remoteFiles.count, remoteMarkdownCount: markdownFiles.count, unreadableCount: unreadableCount)
     }
 
     private static func request(_ url: URL, method: String, username: String, password: String, body: Data? = nil, contentType: String? = nil, depth: String? = nil) async throws -> (Data, HTTPURLResponse) {
@@ -298,7 +327,7 @@ private enum NutstoreWebDAV {
         }
     }
 
-    private static func listFiles(_ folder: URL, username: String, password: String) async throws -> [NutstoreRemoteFile] {
+    private static func listFiles(_ folder: URL, username: String, password: String) async throws -> (files: [NutstoreRemoteFile], responseCount: Int) {
         let body = Data("<?xml version=\"1.0\" encoding=\"utf-8\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:getlastmodified/><d:resourcetype/></d:prop></d:propfind>".utf8)
         let (data, response) = try await request(folder, method: "PROPFIND", username: username, password: password, body: body, contentType: "application/xml; charset=utf-8", depth: "1")
         guard response.statusCode == 207 || response.statusCode == 200 else {
@@ -309,7 +338,7 @@ private enum NutstoreWebDAV {
         let xml = XMLParser(data: data)
         xml.delegate = parser
         guard xml.parse() else { throw NutstoreError.invalidFile }
-        return parser.files
+        return (parser.files, parser.responseCount)
     }
 
     private static func download(_ url: URL, username: String, password: String) async throws -> String {
@@ -368,13 +397,14 @@ private final class WebDAVListingParser: NSObject, XMLParserDelegate {
     private var lastModified = ""
     private var isCollection = false
     private var responseDepth = 0
+    private(set) var responseCount = 0
     private(set) var files: [NutstoreRemoteFile] = []
 
     init(folderURL: URL) { self.folderURL = folderURL }
 
     func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
         currentElement = (qName ?? elementName).split(separator: ":").last.map(String.init) ?? elementName
-        if currentElement == "response" { responseDepth += 1; href = ""; lastModified = ""; isCollection = false }
+        if currentElement == "response" { responseDepth += 1; responseCount += 1; href = ""; lastModified = ""; isCollection = false }
         if currentElement == "collection" { isCollection = true }
     }
 
@@ -390,12 +420,17 @@ private final class WebDAVListingParser: NSObject, XMLParserDelegate {
         let name = (qName ?? elementName).split(separator: ":").last.map(String.init) ?? elementName
         if name == "response" {
             defer { responseDepth = max(0, responseDepth - 1) }
-            guard !isCollection, let url = URL(string: href, relativeTo: folderURL),
-                  url.deletingLastPathComponent().standardizedFileURL == folderURL.standardizedFileURL else { return }
+            guard !isCollection, let url = URL(string: href, relativeTo: folderURL)?.absoluteURL,
+                  url.host?.lowercased() == folderURL.host?.lowercased() else { return }
+            let fileParentPath = url.deletingLastPathComponent().path
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let folderPath = folderURL.absoluteURL.path
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard fileParentPath == folderPath else { return }
             let dateFormatter = DateFormatter()
             dateFormatter.locale = Locale(identifier: "en_US_POSIX")
             dateFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
-            files.append(NutstoreRemoteFile(name: url.lastPathComponent, modifiedAt: dateFormatter.date(from: lastModified.trimmingCharacters(in: .whitespacesAndNewlines))))
+            files.append(NutstoreRemoteFile(name: url.lastPathComponent, modifiedAt: dateFormatter.date(from: lastModified.trimmingCharacters(in: .whitespacesAndNewlines)), url: url))
         }
         currentElement = ""
     }
@@ -429,7 +464,7 @@ final class SpeechRecorder: ObservableObject {
                     self.errorMessage = "请在系统设置中允许语音识别。"
                     return
                 }
-                AVAudioApplication.requestRecordPermission { granted in
+                requestMicrophonePermission { granted in
                     DispatchQueue.main.async {
                         guard granted else {
                             self.isStarting = false
@@ -450,9 +485,11 @@ final class SpeechRecorder: ObservableObject {
             return
         }
         do {
+#if os(iOS)
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.record, mode: .measurement, options: .duckOthers)
             try session.setActive(true, options: .notifyOthersOnDeactivation)
+#endif
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.shouldReportPartialResults = true
             self.request = request
@@ -479,7 +516,9 @@ final class SpeechRecorder: ObservableObject {
                         self?.isFinalizing = false
                         self?.request = nil
                         self?.task = nil
+#if os(iOS)
                         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+#endif
                     }
                 }
             }
@@ -505,9 +544,19 @@ final class SpeechRecorder: ObservableObject {
         } else {
             isFinalizing = false
             request = nil
+#if os(iOS)
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+#endif
         }
     }
+}
+
+private func requestMicrophonePermission(_ completion: @escaping (Bool) -> Void) {
+    #if os(macOS)
+    AVCaptureDevice.requestAccess(for: .audio, completionHandler: completion)
+    #else
+    AVAudioApplication.requestRecordPermission(completionHandler: completion)
+    #endif
 }
 
 enum DeepSeekError: LocalizedError {
@@ -523,7 +572,9 @@ enum DeepSeekError: LocalizedError {
 
 struct DeepSeekService {
     private let diaryStyle = """
-    你是一位细腻、克制的中文日记编辑，也帮助用户学习更丰富的表达。把口语和零散内容整理成朴实、自然、清楚、有余味的第一人称日记。用准确、具体、有变化的词句，避免空泛的“哇，好美”“特别好”；只在原文依据充分时，才把感受写得更细致、更有层次，不得添加原文没有的事实、景物、感官细节或情绪，也不要堆砌辞藻。
+    你是一位细腻、克制的中文日记编辑。把口语整理成有现场感、有层次、读起来像本人写下来的第一人称日记，而不是摘要或流水账。
+    尽量保留原文中具体的人、事、地点、动作、对话、物件、时间和有辨识度的说法；先理清事情的先后与转折，再按场景或话题自然分段。素材足够时，让叙述呈现“当时发生了什么—我怎样感受—后来有什么回想”的层次，也可以用一个真实细节或尚未说尽的心绪收尾，不要每篇都套用同一种结构。
+    用准确的名词和动词、长短有变化的句子，把原文已有的细节写清楚；对确实重要的感受，可以写出它的变化或矛盾。可以调整顺序、补足口语省略的语法并适度润色，但不得编造事实、对话、场景、感官体验、动机或情绪；原文含糊之处仍保持含糊。避免空泛形容、刻意煽情、堆砌比喻、陈词滥调和生硬升华。篇幅跟随素材：有足够内容时不要压缩成几句摘要，内容较少时也不要灌水。
     """
     private let jsonInstruction = """
     根据整理后的全文提炼一个简短、有辨识度的中文标题。标题只选当天最有代表性、最能与其他日子区分开的一个事件、感受或关键词；即使日记里有多个并列事件，也不要把它们全部拼在标题里。不要用“普通的一天”“上班的一天”等泛泛标题，也不能编造内容。另提炼0到2个“特别记忆”标签，只标记日记明确提到的第一次、重要尝试、人生节点或独特经历；没有明确依据时返回空数组。不要生成节假日标签，节日由应用单独标记。标签要短、具体、彼此区别。请严格输出 JSON，格式为 {"title":"日记标题","content":"整理后的日记正文","tags":["特别记忆"]}，不要输出其他文字。
@@ -546,7 +597,7 @@ struct DeepSeekService {
         let systemPrompt = """
         \(diaryStyle)
         \(timeInstruction)
-        用户会给你一篇已经保存的今日整理稿、本次口述的开始时间和新的口述原文。请把两部分合并成一篇完整的今日第一人称日记：保留旧稿和新口述中的重要事实、经历、感受和时间线索；去掉重复内容，让叙述自然连贯；不要把新内容简单粘在末尾，也不要重写到丢失旧内容。\(jsonInstruction)
+        用户会给你一篇已经保存的今日整理稿、本次口述的开始时间和新的口述原文。请将两部分重新编排、合并成一篇完整的今日第一人称日记：保留旧稿和新口述里所有有意义的事实、细节、经历、感受与时间线索；去掉重复表达，按事情的时间和脉络自然衔接。不要把新内容简单粘在末尾，也不要为了润色而删掉旧稿里的具体内容或改变原意。\(jsonInstruction)
         """
         let userText = """
         已保存的今日整理稿：
@@ -626,18 +677,173 @@ private func diaryDayKey(_ date: Date) -> String {
 private enum DiaryStyle {
     static let ink = Color.primary
     static let muted = Color.secondary
+    static var historyDateFont: Font {
+#if os(macOS)
+        .system(.body, design: .rounded)
+#else
+        .system(.footnote, design: .rounded)
+#endif
+    }
+    static var historyTitleFont: Font {
+#if os(macOS)
+        .system(.title3, design: .rounded, weight: .semibold)
+#else
+        .system(.body, design: .rounded, weight: .medium)
+#endif
+    }
+    static var historyTagFont: Font {
+#if os(macOS)
+        .system(.subheadline, design: .rounded, weight: .medium)
+#else
+        .system(.caption2, design: .rounded, weight: .medium)
+#endif
+    }
+    static var diaryDateFont: Font {
+#if os(macOS)
+        .system(.title3, design: .rounded)
+#else
+        .system(.subheadline, design: .rounded)
+#endif
+    }
+    static var diaryTitleFont: Font {
+#if os(macOS)
+        .system(size: 40, weight: .medium, design: .serif)
+#else
+        .system(.largeTitle, design: .serif, weight: .medium)
+#endif
+    }
+    static var diaryContentFont: Font {
+#if os(macOS)
+        .system(size: 20, design: .serif)
+#else
+        .system(.body, design: .serif)
+#endif
+    }
+    static var diaryContentLineSpacing: CGFloat {
+#if os(macOS)
+        11
+#else
+        8
+#endif
+    }
+#if os(macOS)
+    static let paper = Color(nsColor: .windowBackgroundColor)
+    static let secondaryPaper = Color(nsColor: .controlBackgroundColor)
+    static let line = Color(nsColor: .separatorColor)
+#else
     static let paper = Color(uiColor: .systemBackground)
-    static let green = Color.primary
+    static let secondaryPaper = Color(uiColor: .secondarySystemBackground)
     static let line = Color(uiColor: .separator)
+#endif
 }
 
 private struct SystemGlass: ViewModifier {
     func body(content: Content) -> some View {
+        #if os(iOS)
         if #available(iOS 26.0, *) {
             content.glassEffect(.regular, in: Circle())
         } else {
             content.background(.ultraThinMaterial, in: Circle())
         }
+        #else
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular, in: Circle())
+        } else {
+            content.background(.ultraThinMaterial, in: Circle())
+        }
+        #endif
+    }
+}
+
+private struct SystemProminentButton: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        if #available(macOS 26.0, *) {
+            content.buttonStyle(.glassProminent)
+        } else {
+            content.buttonStyle(.borderedProminent)
+        }
+        #else
+        content.buttonStyle(.borderedProminent)
+        #endif
+    }
+}
+
+private struct SystemSecondaryButton: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        if #available(macOS 26.0, *) {
+            content.buttonStyle(.glass)
+        } else {
+            content.buttonStyle(.bordered)
+        }
+        #else
+        content.buttonStyle(.bordered)
+        #endif
+    }
+}
+
+private struct InlineNavigationTitle: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content.navigationBarTitleDisplayMode(.inline)
+        #else
+        content
+        #endif
+    }
+}
+
+private struct HiddenNavigationBar: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content.toolbar(.hidden, for: .navigationBar)
+        #else
+        content
+        #endif
+    }
+}
+
+private struct CalendarSheetPresentation: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content.presentationDetents([.large]).presentationDragIndicator(.visible)
+        #else
+        content
+        #endif
+    }
+}
+
+private struct NoAutocorrection: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content.textInputAutocapitalization(.never).autocorrectionDisabled()
+        #else
+        content
+        #endif
+    }
+}
+
+private struct EmailKeyboard: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content.keyboardType(.emailAddress)
+        #else
+        content
+        #endif
+    }
+}
+
+private struct SwipeBackGesture: ViewModifier {
+    let action: () -> Void
+
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content.gesture(DragGesture(minimumDistance: 30).onEnded { value in
+            if value.translation.width < -100 { action() }
+        })
+        #else
+        content
+        #endif
     }
 }
 
@@ -649,6 +855,8 @@ struct ContentView: View {
     @State private var shouldPolish = false
     @State private var isPolishing = false
     @State private var mergedWithEarlier = false
+    @State private var isSupplementingDraft = false
+    @State private var transcriptBeforeSupplement = ""
     @State private var polishedTitle = ""
     @State private var polishedText = ""
     @State private var polishedTags: [String] = []
@@ -667,17 +875,29 @@ struct ContentView: View {
                 DiaryStyle.paper.ignoresSafeArea()
                 if showingDiaryList {
                     savedDiaryBrowser
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .transition(.move(edge: .leading))
                         .zIndex(2)
                 } else {
                     VStack(spacing: 0) {
                         header
-                        if sessionStarted { liveDiaryContent }
-                        else { welcomeContent }
+                        Group {
+#if os(macOS)
+                            if recorder.isRecording || recorder.isStarting { macRecordingContent }
+                            else if sessionStarted { liveDiaryContent }
+                            else { welcomeContent }
+#else
+                            if sessionStarted { liveDiaryContent }
+                            else { welcomeContent }
+#endif
+                        }
+                        .frame(maxWidth: 860)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .toolbar(.hidden, for: .navigationBar)
+            .modifier(HiddenNavigationBar())
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if sessionStarted && !showingDiaryList { bottomControl }
             }
@@ -702,7 +922,6 @@ struct ContentView: View {
                 if phase == .active { Task { await store.syncWithNutstore() } }
             }
         }
-        .tint(DiaryStyle.green)
     }
 
     private var header: some View {
@@ -712,10 +931,12 @@ struct ContentView: View {
                 selectedDiary = nil
                 withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) { showingDiaryList = true }
             } label: {
-                Text("过往")
-                    .font(.system(.title3, design: .rounded, weight: .semibold))
+                Image(systemName: "list.bullet")
+                    .font(.system(size: 19, weight: .medium))
                     .foregroundStyle(.primary)
-                    .contentShape(Rectangle())
+                    .frame(width: 52, height: 52)
+                    .contentShape(Circle())
+                    .modifier(SystemGlass())
             }
             .buttonStyle(.plain)
             .disabled(recorder.isRecording || recorder.isStarting || isPolishing || recorder.isFinalizing)
@@ -734,6 +955,7 @@ struct ContentView: View {
         .foregroundStyle(.primary)
         .padding(.horizontal, 24)
         .padding(.top, 12)
+        .frame(maxWidth: .infinity)
     }
 
     private var savedDiaryBrowser: some View {
@@ -756,7 +978,7 @@ struct ContentView: View {
                 .accessibilityLabel(selectedDiary == nil ? "返回主页" : "返回日记列表")
                 Spacer()
                 Text(selectedDiary == nil ? "所有日记" : "日记详情")
-                    .font(.system(.headline, design: .rounded, weight: .semibold))
+                    .font(.system(.title3, design: .rounded, weight: .semibold))
                 Spacer()
                 if selectedDiary == nil {
                     Button {
@@ -783,10 +1005,10 @@ struct ContentView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
                         Text(entry.createdAt.formatted(.dateTime.year().month(.wide).day().weekday(.wide).locale(Locale(identifier: "zh_CN"))))
-                            .font(.system(.subheadline, design: .rounded))
+                            .font(DiaryStyle.diaryDateFont)
                             .foregroundStyle(.secondary)
                         Text(entry.title)
-                            .font(.system(.largeTitle, design: .serif, weight: .medium))
+                            .font(DiaryStyle.diaryTitleFont)
                             .foregroundStyle(.primary)
                         if !entry.tags.isEmpty {
                             HStack(spacing: 6) {
@@ -796,16 +1018,36 @@ struct ContentView: View {
                             }
                         }
                         Text(entry.content)
-                            .font(.system(.body, design: .serif))
-                            .lineSpacing(8)
+                            .font(DiaryStyle.diaryContentFont)
+                            .lineSpacing(DiaryStyle.diaryContentLineSpacing)
                             .foregroundStyle(.primary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(24)
+                    .padding(32)
                 }
+                .frame(maxWidth: 960)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if store.entries.isEmpty {
-                ContentUnavailableView("还没有日记", systemImage: "book.closed", description: Text("保存后的日记会出现在这里。"))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                VStack(spacing: 12) {
+                    Image(systemName: "book.closed")
+                        .font(.system(size: 34, weight: .regular))
+                        .foregroundStyle(.tertiary)
+                    Text("还没有日记")
+                        .font(.system(.title3, design: .rounded, weight: .semibold))
+                    Text(store.syncMessage)
+                        .font(.system(.body, design: .rounded))
+                        .foregroundStyle(store.syncMessage.hasPrefix("同步失败") ? Color.red : Color.secondary)
+                        .multilineTextAlignment(.center)
+                    HStack(spacing: 12) {
+                        Button("立即同步") { Task { await store.syncWithNutstore() } }
+                            .modifier(SystemProminentButton())
+                            .disabled(store.isSyncing)
+                        Button("同步设置") { showingSettings = true }
+                            .modifier(SystemSecondaryButton())
+                    }
+                    .padding(.top, 4)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
                     ForEach(store.entries) { entry in
@@ -816,11 +1058,11 @@ struct ContentView: View {
                                 VStack(alignment: .leading, spacing: 6) {
                                     HStack(spacing: 8) {
                                         Text(entry.createdAt.formatted(.dateTime.year().month(.twoDigits).day(.twoDigits).locale(Locale(identifier: "zh_CN"))))
-                                            .font(.system(.footnote, design: .rounded))
+                                            .font(DiaryStyle.historyDateFont)
                                             .foregroundStyle(.secondary)
                                         if let holiday = ChinaHolidayCalendar.label(for: entry.createdAt) {
                                             Text(holiday)
-                                                .font(.system(.caption2, design: .rounded, weight: .medium))
+                                                .font(DiaryStyle.historyTagFont)
                                                 .foregroundStyle(Color.orange)
                                                 .padding(.horizontal, 8)
                                                 .padding(.vertical, 4)
@@ -829,7 +1071,7 @@ struct ContentView: View {
                                         }
                                     }
                                     Text(entry.title)
-                                        .font(.system(.body, design: .rounded, weight: .medium))
+                                        .font(DiaryStyle.historyTitleFont)
                                         .foregroundStyle(.primary)
                                         .lineLimit(2)
                                     if !entry.tags.isEmpty {
@@ -845,25 +1087,29 @@ struct ContentView: View {
                                     .font(.system(size: 12, weight: .semibold))
                                     .foregroundStyle(.tertiary)
                             }
-                            .padding(.vertical, 8)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 13)
+                            .background(DiaryStyle.secondaryPaper.opacity(0.62), in: RoundedRectangle(cornerRadius: 14))
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                         .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
                     }
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
+                .frame(maxWidth: 1100)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .background(DiaryStyle.paper.ignoresSafeArea())
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
-        .gesture(DragGesture(minimumDistance: 30).onEnded { value in
-            if value.translation.width < -100 {
-                if selectedDiary != nil { selectedDiary = nil }
-                else { withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) { showingDiaryList = false } }
-            }
+        .modifier(SwipeBackGesture {
+            if selectedDiary != nil { selectedDiary = nil }
+            else { withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) { showingDiaryList = false } }
         })
     }
 
@@ -894,6 +1140,7 @@ struct ContentView: View {
             .matchedGeometryEffect(id: "recording-button", in: recordingButtonAnimation)
             .buttonStyle(.plain)
             .accessibilityLabel("开始口述")
+            .keyboardShortcut("r", modifiers: [.command, .shift])
             .padding(.top, 18)
             Text("轻点开始口述")
                 .font(.system(.subheadline, design: .rounded))
@@ -910,10 +1157,62 @@ struct ContentView: View {
         .padding(.horizontal, 24)
     }
 
+#if os(macOS)
+    private var macRecordingContent: some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 24)
+            VStack(spacing: 24) {
+                Text("今天的口述")
+                    .font(.system(size: 32, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+
+                if recorder.transcript.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "waveform")
+                            .font(.system(size: 30, weight: .regular))
+                            .foregroundStyle(.tertiary)
+                        Text(recorder.isStarting ? "正在准备语音识别…" : "正在聆听")
+                            .font(.system(.title3, design: .rounded, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Text("想到哪里，就从哪里说起。")
+                            .font(.system(.body, design: .rounded))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 38)
+                } else {
+                    ScrollView {
+                        Text(recorder.transcript)
+                            .font(.system(size: 21, design: .rounded))
+                            .lineSpacing(9)
+                            .foregroundStyle(.primary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                            .padding(28)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(maxHeight: 440)
+                    .background(DiaryStyle.secondaryPaper, in: RoundedRectangle(cornerRadius: 22))
+                }
+            }
+            .frame(maxWidth: 760)
+            .padding(.horizontal, 32)
+            Spacer(minLength: 24)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+#endif
+
     private var liveDiaryContent: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text(polishedText.isEmpty ? "今天的口述" : "原文与整理稿")
+#if os(macOS)
+                .font(.system(size: polishedText.isEmpty ? 32 : 26, weight: .semibold, design: .rounded))
+                .frame(maxWidth: .infinity, alignment: polishedText.isEmpty ? .center : .leading)
+#else
                 .font(.system(.title2, design: .rounded, weight: .medium))
+#endif
                 .foregroundStyle(.primary)
                 .padding(.top, 26)
 
@@ -921,10 +1220,22 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     if !polishedText.isEmpty {
                         VStack(alignment: .leading, spacing: 10) {
-                            Label("本次口述原文", systemImage: "waveform")
-                                .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                            Text(recorder.transcript)
+                            HStack {
+                                Label("本次口述原文", systemImage: "waveform")
+                                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                                Spacer(minLength: 12)
+                                Button {
+                                    startSupplementaryRecording()
+                                } label: {
+                                    Label("补充口述", systemImage: "mic")
+                                        .font(.system(.subheadline, design: .rounded, weight: .medium))
+                                }
+                                .modifier(SystemSecondaryButton())
+                                .disabled(isPolishing || recorder.isRecording || recorder.isStarting || recorder.isFinalizing)
+                                .accessibilityLabel("补充口述原文")
+                            }
+                            Text(displayedTranscript)
                                 .font(.system(.body, design: .rounded))
                                 .lineSpacing(7)
                                 .foregroundStyle(.primary)
@@ -932,7 +1243,7 @@ struct ContentView: View {
                         }
                         .padding(18)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 18))
+                        .background(DiaryStyle.secondaryPaper, in: RoundedRectangle(cornerRadius: 18))
 
                         VStack(alignment: .leading, spacing: 10) {
                             Label(mergedWithEarlier ? "合并后的今日日记" : "整理后的日记", systemImage: "text.alignleft")
@@ -971,7 +1282,7 @@ struct ContentView: View {
                             .foregroundStyle(recorder.transcript.isEmpty ? Color.secondary : Color.primary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(20)
-                            .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 20))
+                            .background(DiaryStyle.secondaryPaper, in: RoundedRectangle(cornerRadius: 20))
                     }
                 }
                 .padding(.bottom, 8)
@@ -997,11 +1308,11 @@ struct ContentView: View {
 
     private var bottomControl: some View {
         VStack(spacing: 10) {
-            if !polishedText.isEmpty {
+            if !polishedText.isEmpty && !recorder.isRecording && !recorder.isStarting && !recorder.isFinalizing && !isPolishing {
                 Button(action: saveDiary) {
                     Label("保存整理后的日记", systemImage: "square.and.arrow.down")
                         .font(.system(.headline, design: .rounded))
-                        .foregroundStyle(Color(uiColor: .systemBackground))
+                        .foregroundStyle(DiaryStyle.paper)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 15)
                         .background(.primary, in: Capsule())
@@ -1009,10 +1320,34 @@ struct ContentView: View {
                 .buttonStyle(.plain)
                 .disabled(saved)
                 .opacity(saved ? 0.55 : 1)
+                .keyboardShortcut("s", modifiers: .command)
                 Text("每天只保存一篇 Markdown；后续口述会合并进今天的日记")
                     .font(.system(.footnote, design: .rounded))
                     .foregroundStyle(.secondary)
             } else {
+#if os(macOS)
+                VStack(spacing: 12) {
+                    Button(action: bottomButtonAction) {
+                        Image(systemName: recorder.isRecording ? "stop.fill" : "mic.fill")
+                            .font(.system(size: 23, weight: .semibold))
+                            .foregroundStyle(.primary)
+                            .frame(width: 72, height: 72)
+                            .modifier(SystemGlass())
+                            .overlay(Circle().strokeBorder(Color.primary.opacity(0.10), lineWidth: 1))
+                            .contentShape(Circle())
+                    }
+                    .matchedGeometryEffect(id: "recording-button", in: recordingButtonAnimation)
+                    .buttonStyle(.plain)
+                    .disabled(isPolishing || recorder.isFinalizing || recorder.isStarting)
+                    .accessibilityLabel(recorder.isRecording ? "结束口述" : "开始口述")
+
+                    Text(bottomButtonTitle)
+                        .font(.system(.body, design: .rounded, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+#else
                 Button(action: bottomButtonAction) {
                     HStack(spacing: 12) {
                         Image(systemName: recorder.isRecording ? "stop.fill" : "mic.fill")
@@ -1031,6 +1366,7 @@ struct ContentView: View {
                 .buttonStyle(.plain)
                 .disabled(isPolishing || recorder.isFinalizing || recorder.isStarting)
                 .accessibilityLabel(recorder.isRecording ? "结束口述" : "开始口述")
+#endif
             }
         }
         .padding(.horizontal, 24)
@@ -1046,6 +1382,21 @@ struct ContentView: View {
         if isPolishing { return "DeepSeek 正在整理…" }
         if errorMessage != nil && !recorder.transcript.isEmpty { return "重试 AI 整理" }
         return "重新开始口述"
+    }
+
+    private var displayedTranscript: String {
+        guard isSupplementingDraft else { return recorder.transcript }
+        return [transcriptBeforeSupplement, recorder.transcript]
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .joined(separator: "\n\n")
+    }
+
+    private func startSupplementaryRecording() {
+        guard !polishedText.isEmpty, !isPolishing, !recorder.isRecording, !recorder.isStarting, !recorder.isFinalizing else { return }
+        transcriptBeforeSupplement = recorder.transcript
+        isSupplementingDraft = true
+        errorMessage = nil
+        recorder.start()
     }
 
     private func bottomButtonAction() {
@@ -1064,7 +1415,7 @@ struct ContentView: View {
 
     private func memoryTag(_ title: String) -> some View {
         Text(title)
-            .font(.system(.caption2, design: .rounded, weight: .medium))
+            .font(DiaryStyle.historyTagFont)
             .foregroundStyle(Color.indigo)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
@@ -1078,6 +1429,8 @@ struct ContentView: View {
         polishedTitle = ""
         polishedText = ""
         polishedTags = []
+        isSupplementingDraft = false
+        transcriptBeforeSupplement = ""
         saved = false
         withAnimation(.spring(response: 0.48, dampingFraction: 0.82)) { sessionStarted = true }
         recorder.start()
@@ -1109,14 +1462,15 @@ struct ContentView: View {
         errorMessage = nil
         let spokenAt = recorder.recordingStartedAt ?? Date()
         do {
-            let existingToday = store.entries(on: Date())
             let service = DeepSeekService()
             let result: PolishedDiary
-            if existingToday.isEmpty {
+            if isSupplementingDraft {
+                result = try await service.merge(existingDiary: polishedText, newRawText: rawText, spokenAt: spokenAt)
+            } else if store.entries(on: Date()).isEmpty {
                 result = try await service.polish(rawText, spokenAt: spokenAt)
                 mergedWithEarlier = false
             } else {
-                let previous = existingToday
+                let previous = store.entries(on: Date())
                     .sorted { $0.createdAt < $1.createdAt }
                     .map(\.content)
                     .joined(separator: "\n\n")
@@ -1126,6 +1480,11 @@ struct ContentView: View {
             polishedTitle = result.title
             polishedText = result.content
             polishedTags = result.tags
+            if isSupplementingDraft {
+                recorder.transcript = displayedTranscript
+                isSupplementingDraft = false
+                transcriptBeforeSupplement = ""
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -1141,6 +1500,8 @@ struct ContentView: View {
         recorder.stop()
         shouldPolish = false
         mergedWithEarlier = false
+        isSupplementingDraft = false
+        transcriptBeforeSupplement = ""
         polishedTitle = ""
         polishedText = ""
         polishedTags = []
@@ -1277,15 +1638,14 @@ private struct DiaryCalendarPicker: View {
             .padding(.horizontal, 20)
             .padding(.top, 12)
             .navigationTitle("日记日历")
-            .navigationBarTitleDisplayMode(.inline)
+            .modifier(InlineNavigationTitle())
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") { dismiss() }
                 }
             }
         }
-        .presentationDetents([.large])
-        .presentationDragIndicator(.visible)
+        .modifier(CalendarSheetPresentation())
     }
 
     private var monthDays: [Date?] {
@@ -1325,7 +1685,7 @@ private struct DiaryCalendarPicker: View {
             VStack(spacing: 2) {
                 Text(date.formatted(.dateTime.day()))
                     .font(.system(.subheadline, design: .rounded, weight: isSelected ? .semibold : .regular))
-                    .foregroundStyle(isSelected ? Color(uiColor: .systemBackground) : Color.primary)
+                    .foregroundStyle(isSelected ? DiaryStyle.paper : Color.primary)
                     .frame(width: 36, height: 36)
                     .background {
                         if isSelected { Circle().fill(Color.primary) }
@@ -1361,17 +1721,167 @@ private struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
+            Group {
+#if os(macOS)
+                macSettingsContent
+#else
+                phoneSettingsContent
+#endif
+            }
+                .navigationTitle("设置")
+                .modifier(InlineNavigationTitle())
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
+                }
+        }
+    }
+
+    #if os(macOS)
+    private var macSettingsContent: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                macSettingsSection("AI 整理") {
+                    macSettingsField("DeepSeek API Key") {
+                        SecureField("输入 API Key", text: $apiKey)
+                            .modifier(NoAutocorrection())
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    macSettingsField("接口地址") {
+                        TextField("API 地址", text: $endpoint)
+                            .modifier(NoAutocorrection())
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    macSettingsField("模型名称") {
+                        TextField("模型名称", text: $model)
+                            .modifier(NoAutocorrection())
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    Text("填写后即可把口述内容整理成日记。API Key 只保存在这台设备上。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                macSettingsSection("坚果云同步") {
+                    macSettingsField("坚果云账号（邮箱）") {
+                        TextField("name@example.com", text: $nutstoreUsername)
+                            .modifier(NoAutocorrection())
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    macSettingsField("坚果云应用密码") {
+                        HStack(spacing: 8) {
+                            Group {
+                                if isShowingNutstorePassword {
+                                    TextField("输入坚果云应用密码", text: $nutstorePassword)
+                                } else {
+                                    SecureField("输入坚果云应用密码", text: $nutstorePassword)
+                                }
+                            }
+                            .modifier(NoAutocorrection())
+                            .textFieldStyle(.roundedBorder)
+                            .onChange(of: nutstorePassword) { _, password in
+                                do {
+                                    try NutstoreCredentialStore.setPassword(password.trimmingCharacters(in: .whitespacesAndNewlines))
+                                    credentialError = nil
+                                } catch {
+                                    credentialError = error.localizedDescription
+                                }
+                            }
+                            Button {
+                                isShowingNutstorePassword.toggle()
+                            } label: {
+                                Image(systemName: isShowingNutstorePassword ? "eye.slash" : "eye")
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(isShowingNutstorePassword ? "隐藏坚果云应用密码" : "显示坚果云应用密码")
+                        }
+                    }
+                    macSettingsField("WebDAV 地址") {
+                        TextField("https://dav.jianguoyun.com/dav/", text: $nutstoreEndpoint)
+                            .modifier(NoAutocorrection())
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    HStack(alignment: .center, spacing: 14) {
+                        Button {
+                            Task { await store.syncWithNutstore() }
+                        } label: {
+                            if store.isSyncing {
+                                Label("正在同步…", systemImage: "arrow.triangle.2.circlepath")
+                            } else {
+                                Label("立即同步", systemImage: "arrow.clockwise")
+                            }
+                        }
+                        .modifier(SystemProminentButton())
+                        .disabled(store.isSyncing)
+                        Text(store.syncMessage)
+                            .font(.footnote)
+                            .foregroundStyle(store.syncMessage.hasPrefix("同步失败") ? Color.red : Color.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if let credentialError {
+                        Text(credentialError).font(.footnote).foregroundStyle(.red)
+                    }
+                    Text("Mac 版和 iPhone 版的同步配置分开保存。请在 Mac 版填写同一坚果云账号和应用密码后同步。日记保存在坚果云根目录的“留白日记”文件夹中，应用会尝试自动创建。请填写坚果云网页端生成的应用密码，不要填写登录密码；密码仅保存在本机钥匙串。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                macSettingsSection("语音与隐私") {
+                    Label("语音识别由 Apple 系统提供", systemImage: "waveform")
+                    Text("日记以 Markdown 格式保存在本机和已配置的坚果云。使用 AI 整理时，口述内容会发送至你填写的 DeepSeek 接口；保存时只保留整理后的日记。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: 660, alignment: .leading)
+            .padding(24)
+            .frame(maxWidth: .infinity)
+        }
+        .frame(minWidth: 600, idealWidth: 720, minHeight: 540)
+        .background(DiaryStyle.paper)
+    }
+
+    private func macSettingsSection<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(title)
+                .font(.system(.headline, design: .rounded, weight: .semibold))
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .background(DiaryStyle.secondaryPaper, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func macSettingsField<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(.subheadline, design: .rounded, weight: .medium))
+                .foregroundStyle(.secondary)
+            content()
+                .frame(maxWidth: .infinity)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    #endif
+
+    #if os(iOS)
+    private var phoneSettingsContent: some View {
             Form {
                 Section {
                     SecureField("DeepSeek API Key", text: $apiKey)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                    .modifier(NoAutocorrection())
                     TextField("接口地址", text: $endpoint)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                    .modifier(NoAutocorrection())
                     TextField("模型名称", text: $model)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                    .modifier(NoAutocorrection())
                 } header: {
                     Text("AI 整理")
                 } footer: {
@@ -1379,9 +1889,8 @@ private struct SettingsView: View {
                 }
                 Section {
                     TextField("坚果云账号（邮箱）", text: $nutstoreUsername)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.emailAddress)
+                        .modifier(NoAutocorrection())
+                        .modifier(EmailKeyboard())
                     HStack {
                         Group {
                             if isShowingNutstorePassword {
@@ -1390,8 +1899,7 @@ private struct SettingsView: View {
                                 SecureField("坚果云应用密码", text: $nutstorePassword)
                             }
                         }
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                        .modifier(NoAutocorrection())
                         .onChange(of: nutstorePassword) { _, password in
                             do {
                                 try NutstoreCredentialStore.setPassword(password.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -1410,8 +1918,7 @@ private struct SettingsView: View {
                         .accessibilityLabel(isShowingNutstorePassword ? "隐藏坚果云应用密码" : "显示坚果云应用密码")
                     }
                     TextField("WebDAV 地址", text: $nutstoreEndpoint)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                    .modifier(NoAutocorrection())
                     Button {
                         Task { await store.syncWithNutstore() }
                     } label: {
@@ -1434,7 +1941,11 @@ private struct SettingsView: View {
                 } header: {
                     Text("坚果云同步")
                 } footer: {
+#if os(macOS)
+                    Text("Mac 版和 iPhone 版的同步配置分开保存。请在 Mac 版填写同一坚果云账号和应用密码后同步。日记保存在坚果云根目录的“留白日记”文件夹中，应用会尝试自动创建。保存日记后会自动上传，打开应用时会同步云端内容。请填写坚果云网页端生成的应用密码，不要填写登录密码；密码仅保存在本机钥匙串。")
+#else
                     Text("日记保存在坚果云根目录的“留白日记”文件夹中，应用会尝试自动创建。保存日记后会自动上传，打开应用时会同步云端内容。请填写坚果云网页端生成的应用密码，不要填写登录密码；密码仅保存在本机钥匙串。")
+#endif
                 }
                 Section {
                     Label("语音识别由 Apple 系统提供", systemImage: "waveform")
@@ -1443,12 +1954,6 @@ private struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .navigationTitle("设置")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } }
-            }
-        }
-        .tint(DiaryStyle.green)
     }
+    #endif
 }
