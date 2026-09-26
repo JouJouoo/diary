@@ -3,6 +3,7 @@ import Speech
 import AVFoundation
 import Combine
 import UIKit
+import Security
 
 @main
 struct DiaryApp: App {
@@ -75,6 +76,8 @@ struct PolishedDiary: Decodable {
 @MainActor
 final class EntryStore: ObservableObject {
     @Published var entries: [DiaryEntry] = []
+    @Published var isSyncing = false
+    @Published var syncMessage = "尚未同步"
     private let fileURL: URL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("diary-entries.json")
 
@@ -94,6 +97,28 @@ final class EntryStore: ObservableObject {
         entries.sort { $0.createdAt > $1.createdAt }
         save()
         saveMarkdown(dailyEntry)
+    }
+
+    func syncWithNutstore() async {
+        guard !isSyncing else { return }
+        let username = UserDefaults.standard.string(forKey: "nutstore_username")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let password = NutstoreCredentialStore.password ?? ""
+        guard !username.isEmpty, !password.isEmpty else {
+            syncMessage = "请先填写坚果云账号和应用密码"
+            return
+        }
+        isSyncing = true
+        syncMessage = "正在同步…"
+        defer { isSyncing = false }
+        do {
+            entries = try await NutstoreWebDAV.sync(entries: entries, username: username, password: password)
+            entries.sort { $0.createdAt > $1.createdAt }
+            save()
+            entries.forEach(saveMarkdown)
+            syncMessage = "同步完成 · \(Date().formatted(.dateTime.hour().minute()))"
+        } catch {
+            syncMessage = "同步失败：\(error.localizedDescription)"
+        }
     }
 
     private func load() {
@@ -129,13 +154,250 @@ final class EntryStore: ObservableObject {
         let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Markdown", isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        try? entry.markdown.write(to: folder.appendingPathComponent(entry.markdownFileName), atomically: true, encoding: .utf8)
+        let markdownURL = folder.appendingPathComponent(entry.markdownFileName)
+        if (try? String(contentsOf: markdownURL, encoding: .utf8)) != entry.markdown {
+            try? entry.markdown.write(to: markdownURL, atomically: true, encoding: .utf8)
+        }
         let legacyPrefix = entry.markdownFileName.replacingOccurrences(of: ".md", with: "-")
         if let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil) {
             for file in files where file.lastPathComponent.hasPrefix(legacyPrefix) && file.pathExtension == "md" {
                 try? FileManager.default.removeItem(at: file)
             }
         }
+    }
+}
+
+private enum NutstoreCredentialStore {
+    private static let service = "com.diary.liubai.nutstore"
+    private static let account = "webdav-password"
+
+    static var password: String? {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                    kSecAttrService as String: service,
+                                    kSecAttrAccount as String: account,
+                                    kSecReturnData as String: true,
+                                    kSecMatchLimit as String: kSecMatchLimitOne]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func setPassword(_ password: String) throws {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                    kSecAttrService as String: service,
+                                    kSecAttrAccount as String: account]
+        SecItemDelete(query as CFDictionary)
+        guard !password.isEmpty else { return }
+        var item = query
+        item[kSecValueData as String] = Data(password.utf8)
+        let status = SecItemAdd(item as CFDictionary, nil)
+        guard status == errSecSuccess else { throw NutstoreError.keychain }
+    }
+}
+
+private enum NutstoreError: LocalizedError {
+    case invalidURL, unauthorized(String), folderCreationDenied, forbidden(String), server(String, Int), keychain, invalidFile
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL: return "坚果云 WebDAV 地址无效。"
+        case .unauthorized(let method): return "坚果云的\(method)请求收到 HTTP 401，账号验证未通过。请确认用户名是注册邮箱，密码是为本应用生成的应用密码。"
+        case .folderCreationDenied: return "账号已连上坚果云，但应用无法自动创建“留白日记”文件夹。请在坚果云根目录手动新建同名文件夹，再点立即同步。"
+        case .forbidden(let operation): return "账号已连上坚果云，但没有权限\(operation)。"
+        case .server(let operation, let status): return "坚果云\(operation)失败（\(status)）。"
+        case .keychain: return "坚果云密码保存失败，请重试。"
+        case .invalidFile: return "云端日记文件无法读取。"
+        }
+    }
+}
+
+private struct NutstoreRemoteFile {
+    let name: String
+    let modifiedAt: Date?
+}
+
+private enum NutstoreWebDAV {
+    private static let endpoint = "https://dav.jianguoyun.com/dav/"
+    private static let folderName = "留白日记"
+    private static let markdownFolder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("Markdown", isDirectory: true)
+
+    static func sync(entries: [DiaryEntry], username: String, password: String) async throws -> [DiaryEntry] {
+        let endpoint = UserDefaults.standard.string(forKey: "nutstore_endpoint") ?? endpoint
+        guard let root = URL(string: endpoint), var components = URLComponents(url: root, resolvingAgainstBaseURL: false) else {
+            throw NutstoreError.invalidURL
+        }
+        if !components.percentEncodedPath.hasSuffix("/") { components.percentEncodedPath += "/" }
+        guard let normalizedRoot = components.url else { throw NutstoreError.invalidURL }
+        let folder = normalizedRoot.appendingPathComponent(folderName, isDirectory: true)
+        let (_, rootResponse) = try await request(normalizedRoot, method: "PROPFIND", username: username, password: password, depth: "0")
+        guard rootResponse.statusCode == 207 || rootResponse.statusCode == 200 else {
+            if rootResponse.statusCode == 403 { throw NutstoreError.forbidden("访问 WebDAV 根目录") }
+            throw NutstoreError.server("验证 WebDAV 根目录", rootResponse.statusCode)
+        }
+        try await ensureFolder(folder, username: username, password: password)
+        var localEntries = Dictionary(uniqueKeysWithValues: entries.map { (diaryDayKey($0.createdAt), $0) })
+        let remoteFiles = try await listFiles(folder, username: username, password: password)
+        var remoteNames = Set<String>()
+
+        for remote in remoteFiles where remote.name.hasSuffix(".md") {
+            remoteNames.insert(remote.name)
+            let dayKey = String(remote.name.dropLast(3))
+            guard dayKey.count == 10 else { continue }
+            let localURL = markdownFolder.appendingPathComponent(remote.name)
+            let localEntry = localEntries[dayKey]
+            let localDate = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.modificationDate]) as? Date
+            let remoteIsNewer = remote.modifiedAt.flatMap { remoteDate in localDate.map { remoteDate.timeIntervalSince($0) > 2 } } ?? false
+
+            if localEntry == nil || remoteIsNewer {
+                let markdown = try await download(folder.appendingPathComponent(remote.name), username: username, password: password)
+                if let entry = parse(markdown, dayKey: dayKey) {
+                    localEntries[dayKey] = entry
+                    try markdown.write(to: localURL, atomically: true, encoding: .utf8)
+                }
+            } else if let localEntry {
+                let localMarkdown = (try? String(contentsOf: localURL, encoding: .utf8)) ?? localEntry.markdown
+                let remoteMarkdown = try await download(folder.appendingPathComponent(remote.name), username: username, password: password)
+                if remoteMarkdown != localMarkdown {
+                    try await upload(localMarkdown, to: folder.appendingPathComponent(remote.name), username: username, password: password)
+                }
+            }
+        }
+
+        for (dayKey, entry) in localEntries where !remoteNames.contains("\(dayKey).md") {
+            try await upload(entry.markdown, to: folder.appendingPathComponent(entry.markdownFileName), username: username, password: password)
+        }
+        return Array(localEntries.values)
+    }
+
+    private static func request(_ url: URL, method: String, username: String, password: String, body: Data? = nil, contentType: String? = nil, depth: String? = nil) async throws -> (Data, HTTPURLResponse) {
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = 30
+        request.setValue("Basic \(Data("\(username):\(password)".utf8).base64EncodedString())", forHTTPHeaderField: "Authorization")
+        if let contentType { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
+        if let depth { request.setValue(depth, forHTTPHeaderField: "Depth") }
+        request.httpBody = body
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw NutstoreError.server("请求", 0) }
+        if http.statusCode == 401 { throw NutstoreError.unauthorized(method) }
+        return (data, http)
+    }
+
+    private static func ensureFolder(_ folder: URL, username: String, password: String) async throws {
+        let (_, response) = try await request(folder, method: "PROPFIND", username: username, password: password, depth: "0")
+        if response.statusCode == 207 || response.statusCode == 200 { return }
+        guard response.statusCode == 404 else {
+            if response.statusCode == 403 { throw NutstoreError.forbidden("访问“留白日记”目录") }
+            throw NutstoreError.server("检查“留白日记”目录", response.statusCode)
+        }
+        let (_, createResponse) = try await request(folder, method: "MKCOL", username: username, password: password)
+        guard (200..<300).contains(createResponse.statusCode) || createResponse.statusCode == 405 else {
+            if createResponse.statusCode == 403 { throw NutstoreError.folderCreationDenied }
+            throw NutstoreError.server("创建“留白日记”目录", createResponse.statusCode)
+        }
+    }
+
+    private static func listFiles(_ folder: URL, username: String, password: String) async throws -> [NutstoreRemoteFile] {
+        let body = Data("<?xml version=\"1.0\" encoding=\"utf-8\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:getlastmodified/><d:resourcetype/></d:prop></d:propfind>".utf8)
+        let (data, response) = try await request(folder, method: "PROPFIND", username: username, password: password, body: body, contentType: "application/xml; charset=utf-8", depth: "1")
+        guard response.statusCode == 207 || response.statusCode == 200 else {
+            if response.statusCode == 403 { throw NutstoreError.forbidden("读取“留白日记”目录") }
+            throw NutstoreError.server("读取“留白日记”目录", response.statusCode)
+        }
+        let parser = WebDAVListingParser(folderURL: folder)
+        let xml = XMLParser(data: data)
+        xml.delegate = parser
+        guard xml.parse() else { throw NutstoreError.invalidFile }
+        return parser.files
+    }
+
+    private static func download(_ url: URL, username: String, password: String) async throws -> String {
+        let (data, response) = try await request(url, method: "GET", username: username, password: password)
+        guard response.statusCode == 200, let text = String(data: data, encoding: .utf8) else {
+            throw NutstoreError.server("下载日记", response.statusCode)
+        }
+        return text
+    }
+
+    private static func upload(_ markdown: String, to url: URL, username: String, password: String) async throws {
+        let (_, response) = try await request(url, method: "PUT", username: username, password: password, body: Data(markdown.utf8), contentType: "text/markdown; charset=utf-8")
+        guard response.statusCode == 200 || response.statusCode == 201 || response.statusCode == 204 else {
+            if response.statusCode == 403 { throw NutstoreError.forbidden("上传日记") }
+            throw NutstoreError.server("上传日记", response.statusCode)
+        }
+    }
+
+    private static func parse(_ markdown: String, dayKey: String) -> DiaryEntry? {
+        let lines = markdown.components(separatedBy: .newlines)
+        guard let first = lines.first, first.hasPrefix("# "),
+              let date = dateFromKey(dayKey) else { return nil }
+        let title = String(first.dropFirst(2)).trimmingCharacters(in: .whitespacesAndNewlines)
+        var tags: [String] = []
+        var contentStart = 1
+        for index in 1..<lines.count {
+            let line = lines[index].trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.hasPrefix("标签：") {
+                tags = line.dropFirst("标签：".count).split(whereSeparator: \.isWhitespace)
+                    .map { String($0).trimmingCharacters(in: CharacterSet(charactersIn: "#")) }
+                contentStart = index + 1
+            } else if line.hasPrefix("_") && line.hasSuffix("_") {
+                contentStart = index + 1
+            }
+        }
+        while contentStart < lines.count && lines[contentStart].isEmpty { contentStart += 1 }
+        let content = lines.dropFirst(contentStart).joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else { return nil }
+        return DiaryEntry(createdAt: date, title: title.isEmpty ? "今天的日记" : title, content: content, tags: Array(tags.prefix(2)))
+    }
+
+    private static func dateFromKey(_ key: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.date(from: key)
+    }
+}
+
+private final class WebDAVListingParser: NSObject, XMLParserDelegate {
+    private let folderURL: URL
+    private var currentElement = ""
+    private var href = ""
+    private var lastModified = ""
+    private var isCollection = false
+    private var responseDepth = 0
+    private(set) var files: [NutstoreRemoteFile] = []
+
+    init(folderURL: URL) { self.folderURL = folderURL }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
+        currentElement = (qName ?? elementName).split(separator: ":").last.map(String.init) ?? elementName
+        if currentElement == "response" { responseDepth += 1; href = ""; lastModified = ""; isCollection = false }
+        if currentElement == "collection" { isCollection = true }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        switch currentElement {
+        case "href": href += string
+        case "getlastmodified": lastModified += string
+        default: break
+        }
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+        let name = (qName ?? elementName).split(separator: ":").last.map(String.init) ?? elementName
+        if name == "response" {
+            defer { responseDepth = max(0, responseDepth - 1) }
+            guard !isCollection, let url = URL(string: href, relativeTo: folderURL),
+                  url.deletingLastPathComponent().standardizedFileURL == folderURL.standardizedFileURL else { return }
+            let dateFormatter = DateFormatter()
+            dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+            dateFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+            files.append(NutstoreRemoteFile(name: url.lastPathComponent, modifiedAt: dateFormatter.date(from: lastModified.trimmingCharacters(in: .whitespacesAndNewlines))))
+        }
+        currentElement = ""
     }
 }
 
@@ -397,6 +659,7 @@ struct ContentView: View {
     @State private var showingSettings = false
     @State private var errorMessage: String?
     @State private var saved = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
@@ -418,7 +681,7 @@ struct ContentView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 if sessionStarted && !showingDiaryList { bottomControl }
             }
-            .sheet(isPresented: $showingSettings) { SettingsView() }
+            .sheet(isPresented: $showingSettings) { SettingsView(store: store) }
             .sheet(isPresented: $showingCalendar, onDismiss: openPendingCalendarEntry) {
                 DiaryCalendarPicker(entries: store.entries) { entry in
                     pendingCalendarEntry = entry
@@ -434,6 +697,10 @@ struct ContentView: View {
                 if let message { errorMessage = message }
             }
             .onDisappear { recorder.stop() }
+            .task { await store.syncWithNutstore() }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active { Task { await store.syncWithNutstore() } }
+            }
         }
         .tint(DiaryStyle.green)
     }
@@ -869,6 +1136,7 @@ struct ContentView: View {
         guard !saved else { return }
         let entry = DiaryEntry(title: polishedTitle, content: polishedText, tags: polishedTags)
         store.upsertDaily(entry)
+        Task { await store.syncWithNutstore() }
         saved = true
         recorder.stop()
         shouldPolish = false
@@ -1081,9 +1349,15 @@ private struct DiaryCalendarPicker: View {
 
 private struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject var store: EntryStore
     @AppStorage("deepseek_api_key") private var apiKey = ""
     @AppStorage("deepseek_endpoint") private var endpoint = "https://api.deepseek.com/chat/completions"
     @AppStorage("deepseek_model") private var model = "deepseek-chat"
+    @AppStorage("nutstore_username") private var nutstoreUsername = ""
+    @AppStorage("nutstore_endpoint") private var nutstoreEndpoint = "https://dav.jianguoyun.com/dav/"
+    @State private var nutstorePassword = NutstoreCredentialStore.password ?? ""
+    @State private var isShowingNutstorePassword = false
+    @State private var credentialError: String?
 
     var body: some View {
         NavigationStack {
@@ -1104,8 +1378,67 @@ private struct SettingsView: View {
                     Text("填写后即可把口述内容整理成日记。API Key 只保存在这台设备上。")
                 }
                 Section {
+                    TextField("坚果云账号（邮箱）", text: $nutstoreUsername)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.emailAddress)
+                    HStack {
+                        Group {
+                            if isShowingNutstorePassword {
+                                TextField("坚果云应用密码", text: $nutstorePassword)
+                            } else {
+                                SecureField("坚果云应用密码", text: $nutstorePassword)
+                            }
+                        }
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onChange(of: nutstorePassword) { _, password in
+                            do {
+                                try NutstoreCredentialStore.setPassword(password.trimmingCharacters(in: .whitespacesAndNewlines))
+                                credentialError = nil
+                            } catch {
+                                credentialError = error.localizedDescription
+                            }
+                        }
+                        Button {
+                            isShowingNutstorePassword.toggle()
+                        } label: {
+                            Image(systemName: isShowingNutstorePassword ? "eye.slash" : "eye")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(isShowingNutstorePassword ? "隐藏坚果云应用密码" : "显示坚果云应用密码")
+                    }
+                    TextField("WebDAV 地址", text: $nutstoreEndpoint)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Button {
+                        Task { await store.syncWithNutstore() }
+                    } label: {
+                        HStack {
+                            if store.isSyncing { ProgressView().padding(.trailing, 4) }
+                            Text(store.isSyncing ? "正在同步…" : "立即同步")
+                            Spacer()
+                            Text(store.syncMessage)
+                                .font(.caption)
+                                .foregroundStyle(store.syncMessage.hasPrefix("同步失败") ? Color.red : Color.secondary)
+                                .multilineTextAlignment(.trailing)
+                                .frame(maxWidth: 180, alignment: .trailing)
+                                .lineLimit(3)
+                        }
+                    }
+                    .disabled(store.isSyncing)
+                    if let credentialError {
+                        Text(credentialError).font(.footnote).foregroundStyle(.red)
+                    }
+                } header: {
+                    Text("坚果云同步")
+                } footer: {
+                    Text("日记保存在坚果云根目录的“留白日记”文件夹中，应用会尝试自动创建。保存日记后会自动上传，打开应用时会同步云端内容。请填写坚果云网页端生成的应用密码，不要填写登录密码；密码仅保存在本机钥匙串。")
+                }
+                Section {
                     Label("语音识别由 Apple 系统提供", systemImage: "waveform")
-                    Text("日记以 Markdown 格式保存在本机。使用 AI 整理时，口述内容会发送至你填写的 DeepSeek 接口；保存时只保留整理后的日记。")
+                    Text("日记以 Markdown 格式保存在本机和已配置的坚果云。使用 AI 整理时，口述内容会发送至你填写的 DeepSeek 接口；保存时只保留整理后的日记。")
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }
