@@ -27,6 +27,9 @@ struct ContentView: View {
     @State private var showingCalendar = false
     @State private var isSelectingEntriesToMerge = false
     @State private var selectedMergeEntryIDs: Set<UUID> = []
+    @State private var isSelectingEntriesToDelete = false
+    @State private var selectedDeleteEntryIDs: Set<UUID> = []
+    @State private var showingDeleteConfirmation = false
     @State private var pendingCalendarEntry: DiaryEntry?
     @State private var isSummarizingSelection = false
     @State private var mergeErrorMessage: String?
@@ -138,13 +141,19 @@ struct ContentView: View {
     }
 
     private var groupedEntries: [(key: String, date: Date, entries: [DiaryEntry])] {
-        Dictionary(grouping: store.entries, by: { diaryDayKey($0.createdAt) })
-            .values
-            .compactMap { values in
-                guard let date = values.map(\.createdAt).min() else { return nil }
-                return (diaryDayKey(date), date, values.sorted { $0.createdAt > $1.createdAt })
-            }
-            .sorted { $0.date > $1.date }
+        let sortedEntries = store.entries.sorted { $0.createdAt > $1.createdAt }
+        let todayKey = diaryDayKey(Date())
+        let todayEntries = sortedEntries.filter { diaryDayKey($0.createdAt) == todayKey }
+        let earlierEntries = sortedEntries.filter { diaryDayKey($0.createdAt) != todayKey }
+
+        var groups: [(key: String, date: Date, entries: [DiaryEntry])] = []
+        if let firstTodayEntry = todayEntries.first {
+            groups.append(("today", firstTodayEntry.createdAt, todayEntries))
+        }
+        if let firstEarlierEntry = earlierEntries.first {
+            groups.append(("earlier", firstEarlierEntry.createdAt, earlierEntries))
+        }
+        return groups
     }
 
     private var selectedDiaryContent: Binding<String> {
@@ -209,6 +218,8 @@ struct ContentView: View {
                 Button {
                     if isSelectingEntriesToMerge {
                         cancelEntryMergeSelection()
+                    } else if isSelectingEntriesToDelete {
+                        cancelEntryDeleteSelection()
                     } else if isEditingSelectedDiary {
                         cancelSelectedDiaryEditing()
                     } else if selectedDiary != nil {
@@ -217,19 +228,45 @@ struct ContentView: View {
                         withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) { showingDiaryList = false }
                     }
                 } label: {
-                    Image(systemName: isSelectingEntriesToMerge ? "xmark" : "chevron.left")
+                    Image(systemName: isSelectingEntriesToMerge || isSelectingEntriesToDelete ? "xmark" : "chevron.left")
                         .font(.appSystem(size: 16, weight: .semibold))
                         .foregroundStyle(.primary)
                         .frame(width: 44, height: 44)
                         .modifier(SystemGlass())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(isSelectingEntriesToMerge ? "取消合并选择" : (isEditingSelectedDiary ? "取消编辑" : (selectedDiary == nil ? "返回主页" : "返回日记列表")))
+                .accessibilityLabel(isSelectingEntriesToMerge ? "取消合并选择" : (isSelectingEntriesToDelete ? "取消删除选择" : (isEditingSelectedDiary ? "取消编辑" : (selectedDiary == nil ? "返回主页" : "返回日记列表"))))
                 Spacer()
-                Text(isSelectingEntriesToMerge ? (mergeAnchorDayKey.map { "合并日记 · \($0)" } ?? "选择要合并的日记") : (selectedDiary == nil ? "所有日记" : "日记详情"))
+                Text(isSelectingEntriesToMerge ? (mergeAnchorDayKey.map { "合并日记 · \($0)" } ?? "选择要合并的日记") : (isSelectingEntriesToDelete ? "选择日记" : (selectedDiary == nil ? "" : "日记详情")))
                     .font(.appSystem(.title3, design: .rounded, weight: .semibold))
                 Spacer()
-                if selectedDiary == nil && isSelectingEntriesToMerge {
+                if selectedDiary == nil && isSelectingEntriesToDelete {
+                    HStack(spacing: 8) {
+                        Button(selectedDeleteEntryIDs.count == store.entries.count ? "取消全选" : "全选") {
+                            toggleSelectAllEntries()
+                        }
+                        .font(.appSystem(.subheadline, design: .rounded, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 12)
+                        .frame(height: 40)
+                        .modifier(SystemGlassCapsule())
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(selectedDeleteEntryIDs.count == store.entries.count ? "取消全选" : "全选日记")
+
+                        Button {
+                            showingDeleteConfirmation = true
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.appSystem(size: 17, weight: .semibold))
+                                .foregroundStyle(.red)
+                                .frame(width: 44, height: 40)
+                                .modifier(SystemGlassCapsule())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(selectedDeleteEntryIDs.isEmpty)
+                        .accessibilityLabel("删除已选的 \(selectedDeleteEntryIDs.count) 篇日记")
+                    }
+                } else if selectedDiary == nil && isSelectingEntriesToMerge {
                     Button {
                         Task { await summarizeEntries(selectedMergeEntries) }
                     } label: {
@@ -279,6 +316,19 @@ struct ContentView: View {
                         .buttonStyle(.plain)
                         .disabled(store.entries.count < 2 || isSummarizingSelection)
                         .accessibilityLabel("选择日记进行合并")
+
+                        Button {
+                            isSelectingEntriesToDelete = true
+                            selectedDeleteEntryIDs = []
+                        } label: {
+                            Image(systemName: "checklist")
+                                .font(.appSystem(size: 17, weight: .medium))
+                                .foregroundStyle(.primary)
+                                .frame(width: 44, height: 44)
+                                .modifier(SystemGlass())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("选择日记进行删除")
                     }
                 } else {
 #if os(macOS)
@@ -355,6 +405,13 @@ struct ContentView: View {
                 .frame(maxWidth: 1100, alignment: .leading)
                 .padding(.horizontal, 20)
                 .padding(.vertical, 10)
+            } else if isSelectingEntriesToDelete {
+                Text("已选 \(selectedDeleteEntryIDs.count) 篇日记")
+                    .font(.appSystem(.footnote, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: 1100, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
             }
 
             if let entry = selectedDiary {
@@ -437,82 +494,49 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List {
-                    ForEach(groupedEntries, id: \.key) { group in
-                        Section {
-                            ForEach(group.entries) { entry in
-                                Button {
-                                    if isSelectingEntriesToMerge {
-                                        toggleMergeSelection(entry)
-                                    } else {
-                                        isEditingSelectedDiary = false
-                                        originalDiaryBeforeEditing = nil
-                                        withAnimation(.easeInOut(duration: 0.22)) { selectedDiary = entry }
-                                    }
-                                } label: {
-                            HStack(spacing: 14) {
-                                if isSelectingEntriesToMerge {
-                                    Image(systemName: selectedMergeEntryIDs.contains(entry.id) ? "checkmark.circle.fill" : "circle")
-                                        .font(.appSystem(size: 22))
-                                        .foregroundStyle(selectedMergeEntryIDs.contains(entry.id) ? Color.accentColor : Color.secondary)
-                                }
-                                VStack(alignment: .leading, spacing: 6) {
-                                    HStack(spacing: 8) {
-                                        Text(entry.createdAt.formatted(.dateTime.year().month(.twoDigits).day(.twoDigits).locale(Locale(identifier: "zh_CN"))))
-                                            .font(DiaryStyle.historyDateFont)
-                                            .foregroundStyle(.secondary)
-                                        if let holiday = ChinaHolidayCalendar.label(for: entry.createdAt) {
-                                            Text(holiday)
-                                                .font(DiaryStyle.historyTagFont)
-                                                .foregroundStyle(Color.orange)
-                                                .padding(.horizontal, 8)
-                                                .padding(.vertical, 4)
-                                                .background(Color.orange.opacity(0.13), in: Capsule())
-                                                .overlay(Capsule().strokeBorder(Color.orange.opacity(0.18), lineWidth: 1))
-                                        }
-                                    }
-                                    Text(entry.title)
-                                        .font(DiaryStyle.historyTitleFont)
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(2)
-                                    if !entry.tags.isEmpty {
-                                        HStack(spacing: 6) {
-                                            ForEach(Array(entry.tags.prefix(2).enumerated()), id: \.offset) { _, tag in
-                                                memoryTag(tag)
-                                            }
-                                        }
-                                    }
-                                }
-                                Spacer(minLength: 8)
-                                if isSelectingEntriesToMerge {
-                                    if mergeAnchorDayKey != nil && diaryDayKey(entry.createdAt) != mergeAnchorDayKey {
-                                        Text("不同日期")
-                                            .font(.appSystem(.caption2, design: .rounded))
-                                            .foregroundStyle(.tertiary)
-                                    }
-                                } else {
-                                    Image(systemName: "chevron.right")
-                                        .font(.appSystem(size: 12, weight: .semibold))
-                                        .foregroundStyle(.tertiary)
-                                }
+                    if let todayGroup = groupedEntries.first(where: { $0.key == "today" }) {
+                        VStack(alignment: .leading, spacing: 0) {
+                            HStack(spacing: 8) {
+                                Image(systemName: "calendar")
+                                    .font(.appSystem(.subheadline, weight: .semibold))
+                                Text("今天")
+                                    .font(.appSystem(.headline, design: .rounded, weight: .bold))
+                                Spacer()
+                                Text("\(todayGroup.entries.count) 篇")
+                                    .font(.appSystem(.subheadline, design: .rounded, weight: .medium))
+                                    .foregroundStyle(Color.accentColor.opacity(0.8))
                             }
+                            .foregroundStyle(Color.accentColor)
                             .padding(.horizontal, 14)
-                            .padding(.vertical, 13)
-                            .background(DiaryStyle.secondaryPaper.opacity(0.62), in: RoundedRectangle(cornerRadius: 14))
-                            .contentShape(Rectangle())
+                            .padding(.top, 14)
+                            .padding(.bottom, 8)
+
+                            ForEach(Array(todayGroup.entries.enumerated()), id: \.offset) { index, entry in
+                                if index > 0 {
+                                    Rectangle()
+                                        .fill(Color.accentColor.opacity(0.16))
+                                        .frame(height: 1)
+                                        .padding(.leading, 14)
+                                }
+                                diaryEntryButton(entry, inTodayGroup: true)
+                            }
                         }
-                        .disabled(isSelectingEntriesToMerge && mergeAnchorDayKey != nil && diaryDayKey(entry.createdAt) != mergeAnchorDayKey)
-                        .opacity(isSelectingEntriesToMerge && mergeAnchorDayKey != nil && diaryDayKey(entry.createdAt) != mergeAnchorDayKey ? 0.4 : 1)
-                        .buttonStyle(.plain)
+                        .padding(8)
+                        .background(Color.accentColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 18))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 18)
+                                .strokeBorder(Color.accentColor.opacity(0.2), lineWidth: 1)
+                        }
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
-                        .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
-                            }
-                        } header: {
-                            Text(group.date.formatted(.dateTime.year().month(.twoDigits).day(.twoDigits).locale(Locale(identifier: "zh_CN"))))
-                                .font(.appSystem(.subheadline, design: .rounded, weight: .medium))
-                                .foregroundStyle(.secondary)
-                                .textCase(nil)
-                        }
+                        .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 12, trailing: 12))
+                    }
+
+                    ForEach(groupedEntries.first(where: { $0.key == "earlier" })?.entries ?? []) { entry in
+                        diaryEntryButton(entry, inTodayGroup: false)
+                            .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
+                            .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
                     }
                 }
                 .listStyle(.plain)
@@ -526,10 +550,91 @@ struct ContentView: View {
         .contentShape(Rectangle())
         .modifier(SwipeBackGesture {
             if isSelectingEntriesToMerge { cancelEntryMergeSelection() }
+            else if isSelectingEntriesToDelete { cancelEntryDeleteSelection() }
             else if isEditingSelectedDiary { cancelSelectedDiaryEditing() }
             else if selectedDiary != nil { selectedDiary = nil }
             else { withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) { showingDiaryList = false } }
         })
+        .alert("删除已选的 \(selectedDeleteEntryIDs.count) 篇日记？", isPresented: $showingDeleteConfirmation) {
+            Button("删除", role: .destructive) { deleteSelectedEntries() }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text("删除后无法恢复。")
+        }
+    }
+
+    private func diaryEntryButton(_ entry: DiaryEntry, inTodayGroup: Bool) -> some View {
+        Button {
+            if isSelectingEntriesToDelete {
+                toggleDeleteSelection(entry)
+            } else if isSelectingEntriesToMerge {
+                toggleMergeSelection(entry)
+            } else {
+                isEditingSelectedDiary = false
+                originalDiaryBeforeEditing = nil
+                withAnimation(.easeInOut(duration: 0.22)) { selectedDiary = entry }
+            }
+        } label: {
+            HStack(spacing: 14) {
+                if isSelectingEntriesToMerge || isSelectingEntriesToDelete {
+                    let isSelected = isSelectingEntriesToMerge
+                        ? selectedMergeEntryIDs.contains(entry.id)
+                        : selectedDeleteEntryIDs.contains(entry.id)
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .font(.appSystem(size: 22))
+                        .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text(entry.createdAt.formatted(.dateTime.year().month(.twoDigits).day(.twoDigits).locale(Locale(identifier: "zh_CN"))))
+                            .font(DiaryStyle.historyDateFont)
+                            .foregroundStyle(.secondary)
+                        if let holiday = ChinaHolidayCalendar.label(for: entry.createdAt) {
+                            Text(holiday)
+                                .font(DiaryStyle.historyTagFont)
+                                .foregroundStyle(Color.orange)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.orange.opacity(0.13), in: Capsule())
+                                .overlay(Capsule().strokeBorder(Color.orange.opacity(0.18), lineWidth: 1))
+                        }
+                    }
+                    Text(entry.title)
+                        .font(DiaryStyle.historyTitleFont)
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                    if !entry.tags.isEmpty {
+                        HStack(spacing: 6) {
+                            ForEach(Array(entry.tags.prefix(2).enumerated()), id: \.offset) { _, tag in
+                                memoryTag(tag)
+                            }
+                        }
+                    }
+                }
+                Spacer(minLength: 8)
+                if isSelectingEntriesToMerge {
+                    if mergeAnchorDayKey != nil && diaryDayKey(entry.createdAt) != mergeAnchorDayKey {
+                        Text("不同日期")
+                            .font(.appSystem(.caption2, design: .rounded))
+                            .foregroundStyle(.tertiary)
+                    }
+                } else if !isSelectingEntriesToDelete {
+                    Image(systemName: "chevron.right")
+                        .font(.appSystem(size: 12, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 13)
+            .background(
+                inTodayGroup ? Color.clear : DiaryStyle.secondaryPaper.opacity(0.62),
+                in: RoundedRectangle(cornerRadius: 14)
+            )
+            .contentShape(Rectangle())
+        }
+        .disabled(isSelectingEntriesToMerge && mergeAnchorDayKey != nil && diaryDayKey(entry.createdAt) != mergeAnchorDayKey)
+        .opacity(isSelectingEntriesToMerge && mergeAnchorDayKey != nil && diaryDayKey(entry.createdAt) != mergeAnchorDayKey ? 0.4 : 1)
+        .buttonStyle(.plain)
     }
 
     private var welcomeContent: some View {
@@ -1075,6 +1180,32 @@ struct ContentView: View {
         isSelectingEntriesToMerge = false
         selectedMergeEntryIDs = []
         mergeErrorMessage = nil
+    }
+
+    private func toggleDeleteSelection(_ entry: DiaryEntry) {
+        if selectedDeleteEntryIDs.contains(entry.id) {
+            selectedDeleteEntryIDs.remove(entry.id)
+        } else {
+            selectedDeleteEntryIDs.insert(entry.id)
+        }
+    }
+
+    private func toggleSelectAllEntries() {
+        if selectedDeleteEntryIDs.count == store.entries.count {
+            selectedDeleteEntryIDs = []
+        } else {
+            selectedDeleteEntryIDs = Set(store.entries.map(\.id))
+        }
+    }
+
+    private func cancelEntryDeleteSelection() {
+        isSelectingEntriesToDelete = false
+        selectedDeleteEntryIDs = []
+    }
+
+    private func deleteSelectedEntries() {
+        store.deleteEntries(selectedDeleteEntryIDs)
+        cancelEntryDeleteSelection()
     }
 }
 

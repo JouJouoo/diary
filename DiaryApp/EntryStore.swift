@@ -31,6 +31,19 @@ final class EntryStore: ObservableObject {
         saveMarkdown(entry)
     }
 
+    func deleteEntries(_ ids: Set<UUID>) {
+        guard !ids.isEmpty else { return }
+        let deletedEntries = entries.filter { ids.contains($0.id) }
+        entries.removeAll { ids.contains($0.id) }
+        save()
+
+        let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Markdown", isDirectory: true)
+        for entry in deletedEntries {
+            try? FileManager.default.removeItem(at: folder.appendingPathComponent(entry.markdownFileName))
+        }
+    }
+
     @discardableResult
     func replaceSelectedEntries(_ ids: Set<UUID>, with entry: DiaryEntry) -> Bool {
         guard ids.count > 1 else { return false }
@@ -224,6 +237,24 @@ private enum NutstoreWebDAV {
         var uploadedCount = 0
         var skippedCount = 0
         var remoteNames = Set<String>()
+        var supersededRemoteFiles: [NutstoreRemoteFile] = []
+
+        // Read the remote set first so merge markers are known before processing any
+        // individual file. Otherwise a source file listed before its summary could
+        // survive cleanup or be uploaded back by another device.
+        var remoteMarkdownByName: [String: String] = [:]
+        var remoteEntryByName: [String: DiaryEntry] = [:]
+        var supersededEntryIDs = Set(localEntries.values.flatMap(\.mergedEntryIDs))
+        for remote in markdownFiles {
+            let dayKey = String(remote.name.prefix(10))
+            guard dayKey.count == 10 else { continue }
+            let markdown = try await download(remote.url, username: username, password: password)
+            remoteMarkdownByName[remote.name] = markdown
+            if let entry = parse(markdown, dayKey: dayKey, fileName: remote.name) {
+                remoteEntryByName[remote.name] = entry
+                supersededEntryIDs.formUnion(entry.mergedEntryIDs)
+            }
+        }
 
         for remote in markdownFiles {
             remoteNames.insert(remote.name)
@@ -233,14 +264,12 @@ private enum NutstoreWebDAV {
                 continue
             }
             let remoteID = UUID(uuidString: String(remote.name.dropFirst(11).dropLast(3)))
-            let replacedBySummary = localEntries.values.contains { entry in
-                if let remoteID { return entry.mergedEntryIDs.contains(remoteID) }
-                return remote.name == "\(dayKey).md"
-                    && diaryDayKey(entry.createdAt) == dayKey
-                    && !entry.mergedEntryIDs.isEmpty
-            }
+            let replacedBySummary = remoteID.map(supersededEntryIDs.contains) ??
+                (remote.name == "\(dayKey).md"
+                    && (localEntries.values.contains { diaryDayKey($0.createdAt) == dayKey && !$0.mergedEntryIDs.isEmpty }
+                        || remoteEntryByName.values.contains { diaryDayKey($0.createdAt) == dayKey && !$0.mergedEntryIDs.isEmpty }))
             if replacedBySummary {
-                if direction != .download { try await delete(remote.url, username: username, password: password) }
+                if direction != .download { supersededRemoteFiles.append(remote) }
                 continue
             }
             let localURL = markdownFolder.appendingPathComponent(remote.name)
@@ -248,11 +277,14 @@ private enum NutstoreWebDAV {
             let localDate = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.modificationDate]) as? Date
             let remoteIsNewer = remote.modifiedAt.flatMap { remoteDate in localDate.map { remoteDate.timeIntervalSince($0) > 2 } } ?? false
             let localIsNewer = localDate.flatMap { date in remote.modifiedAt.map { date.timeIntervalSince($0) > 2 } } ?? false
-            let remoteMarkdown = try await download(remote.url, username: username, password: password)
+            guard let remoteMarkdown = remoteMarkdownByName[remote.name] else {
+                unreadableCount += 1
+                continue
+            }
             if let localEntry, remoteMarkdown == localEntry.markdown { continue }
 
             if direction != .upload && (localEntry == nil || remoteIsNewer) {
-                if let entry = parse(remoteMarkdown, dayKey: dayKey, fileName: remote.name) {
+                if let entry = remoteEntryByName[remote.name] {
                     localEntries[remote.name] = entry
                     try remoteMarkdown.write(to: localURL, atomically: true, encoding: .utf8)
                     downloadedCount += 1
@@ -269,8 +301,14 @@ private enum NutstoreWebDAV {
 
         if direction != .download {
             for (fileName, entry) in localEntries where !remoteNames.contains(fileName) {
+                guard !supersededEntryIDs.contains(entry.id) else { continue }
                 try await upload(entry.markdown, to: folder.appendingPathComponent(entry.markdownFileName), username: username, password: password)
                 uploadedCount += 1
+            }
+            // Publish summaries before removing their source entries, so a failed
+            // upload cannot leave the cloud without any copy of that day's diary.
+            for remote in supersededRemoteFiles {
+                try await delete(remote.url, username: username, password: password)
             }
         }
         return NutstoreSyncResult(entries: Array(localEntries.values), downloadedCount: downloadedCount, uploadedCount: uploadedCount, skippedCount: skippedCount, unreadableCount: unreadableCount)

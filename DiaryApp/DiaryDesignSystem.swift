@@ -122,6 +122,24 @@ struct SystemGlass: ViewModifier {
     }
 }
 
+struct SystemGlassCapsule: ViewModifier {
+    func body(content: Content) -> some View {
+#if os(iOS)
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular, in: Capsule())
+        } else {
+            content.background(.ultraThinMaterial, in: Capsule())
+        }
+#else
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular, in: Capsule())
+        } else {
+            content.background(.ultraThinMaterial, in: Capsule())
+        }
+#endif
+    }
+}
+
 struct SystemProminentButton: ViewModifier {
     func body(content: Content) -> some View {
         #if os(macOS)
