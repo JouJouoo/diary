@@ -11,6 +11,22 @@
 		A10000000000000000000013 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000014 /* Assets.xcassets */; };
 		A10000000000000000000018 /* DiaryApp.swift in Sources (Mac) */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* DiaryApp.swift */; };
 		A10000000000000000000019 /* Assets.xcassets in Resources (Mac) */ = {isa = PBXBuildFile; fileRef = A10000000000000000000014 /* Assets.xcassets */; };
+		A10000000000000000000027 /* SpeechRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000029 /* SpeechRecorder.swift */; };
+		A10000000000000000000028 /* SpeechRecorder.swift in Sources (Mac) */ = {isa = PBXBuildFile; fileRef = A10000000000000000000029 /* SpeechRecorder.swift */; };
+		B10000000000000000000001 /* DiaryModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000020 /* DiaryModels.swift */; };
+		B10000000000000000000002 /* DiaryModels.swift in Sources (Mac) */ = {isa = PBXBuildFile; fileRef = B10000000000000000000020 /* DiaryModels.swift */; };
+		B10000000000000000000003 /* EntryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000021 /* EntryStore.swift */; };
+		B10000000000000000000004 /* EntryStore.swift in Sources (Mac) */ = {isa = PBXBuildFile; fileRef = B10000000000000000000021 /* EntryStore.swift */; };
+		B10000000000000000000005 /* DeepSeekService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000022 /* DeepSeekService.swift */; };
+		B10000000000000000000006 /* DeepSeekService.swift in Sources (Mac) */ = {isa = PBXBuildFile; fileRef = B10000000000000000000022 /* DeepSeekService.swift */; };
+		B10000000000000000000007 /* DiaryDesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000023 /* DiaryDesignSystem.swift */; };
+		B10000000000000000000008 /* DiaryDesignSystem.swift in Sources (Mac) */ = {isa = PBXBuildFile; fileRef = B10000000000000000000023 /* DiaryDesignSystem.swift */; };
+		B10000000000000000000009 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000024 /* ContentView.swift */; };
+		B1000000000000000000000A /* ContentView.swift in Sources (Mac) */ = {isa = PBXBuildFile; fileRef = B10000000000000000000024 /* ContentView.swift */; };
+		B1000000000000000000000B /* DiaryCalendarPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000025 /* DiaryCalendarPicker.swift */; };
+		B1000000000000000000000C /* DiaryCalendarPicker.swift in Sources (Mac) */ = {isa = PBXBuildFile; fileRef = B10000000000000000000025 /* DiaryCalendarPicker.swift */; };
+		B1000000000000000000000D /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B10000000000000000000026 /* SettingsView.swift */; };
+		B1000000000000000000000E /* SettingsView.swift in Sources (Mac) */ = {isa = PBXBuildFile; fileRef = B10000000000000000000026 /* SettingsView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -21,6 +37,14 @@
 		A10000000000000000000015 /* Info-macOS.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = "Info-macOS.plist"; sourceTree = "<group>"; };
 		A10000000000000000000016 /* DiaryAppMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DiaryAppMac.entitlements; sourceTree = "<group>"; };
 		A10000000000000000000017 /* DiaryAppMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DiaryAppMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000029 /* SpeechRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechRecorder.swift; sourceTree = "<group>"; };
+		B10000000000000000000020 /* DiaryModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiaryModels.swift; sourceTree = "<group>"; };
+		B10000000000000000000021 /* EntryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EntryStore.swift; sourceTree = "<group>"; };
+		B10000000000000000000022 /* DeepSeekService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepSeekService.swift; sourceTree = "<group>"; };
+		B10000000000000000000023 /* DiaryDesignSystem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiaryDesignSystem.swift; sourceTree = "<group>"; };
+		B10000000000000000000024 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		B10000000000000000000025 /* DiaryCalendarPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiaryCalendarPicker.swift; sourceTree = "<group>"; };
+		B10000000000000000000026 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -46,6 +70,14 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000002 /* DiaryApp.swift */,
+				A10000000000000000000029 /* SpeechRecorder.swift */,
+				B10000000000000000000026 /* SettingsView.swift */,
+				B10000000000000000000025 /* DiaryCalendarPicker.swift */,
+				B10000000000000000000024 /* ContentView.swift */,
+				B10000000000000000000023 /* DiaryDesignSystem.swift */,
+				B10000000000000000000022 /* DeepSeekService.swift */,
+				B10000000000000000000021 /* EntryStore.swift */,
+				B10000000000000000000020 /* DiaryModels.swift */,
 				A10000000000000000000003 /* Info.plist */,
 				A10000000000000000000014 /* Assets.xcassets */,
 				A10000000000000000000015 /* Info-macOS.plist */,
@@ -136,7 +168,17 @@
 		A10000000000000000000021 /* Sources (Mac) */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
-			files = (A10000000000000000000018 /* DiaryApp.swift in Sources (Mac) */,);
+			files = (
+				A10000000000000000000018 /* DiaryApp.swift in Sources (Mac) */,
+				A10000000000000000000028 /* SpeechRecorder.swift in Sources (Mac) */,
+				B1000000000000000000000E /* SettingsView.swift in Sources (Mac) */,
+				B1000000000000000000000C /* DiaryCalendarPicker.swift in Sources (Mac) */,
+				B1000000000000000000000A /* ContentView.swift in Sources (Mac) */,
+				B10000000000000000000008 /* DiaryDesignSystem.swift in Sources (Mac) */,
+				B10000000000000000000006 /* DeepSeekService.swift in Sources (Mac) */,
+				B10000000000000000000004 /* EntryStore.swift in Sources (Mac) */,
+				B10000000000000000000002 /* DiaryModels.swift in Sources (Mac) */,
+			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		A10000000000000000000022 /* Frameworks (Mac) */ = {
@@ -167,6 +209,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000000000000000000001 /* DiaryApp.swift in Sources */,
+				A10000000000000000000027 /* SpeechRecorder.swift in Sources */,
+				B1000000000000000000000D /* SettingsView.swift in Sources */,
+				B1000000000000000000000B /* DiaryCalendarPicker.swift in Sources */,
+				B10000000000000000000009 /* ContentView.swift in Sources */,
+				B10000000000000000000007 /* DiaryDesignSystem.swift in Sources */,
+				B10000000000000000000005 /* DeepSeekService.swift in Sources */,
+				B10000000000000000000003 /* EntryStore.swift in Sources */,
+				B10000000000000000000001 /* DiaryModels.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
