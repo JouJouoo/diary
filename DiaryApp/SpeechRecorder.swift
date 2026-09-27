@@ -25,6 +25,7 @@ final class SpeechRecorder: ObservableObject {
     private var segmentTranscript = ""
     private var completedAudioBufferCount = 0
     private var completedAudibleSignal = false
+    private var startupAttempt = 0
 
     var audioBufferCount: Int {
         completedAudioBufferCount + (audioRequestBox?.appendedBufferCount ?? 0)
@@ -38,6 +39,8 @@ final class SpeechRecorder: ObservableObject {
 
     func start() {
         guard !isRecording, !isStarting, !isFinalizing else { return }
+        startupAttempt += 1
+        let currentStartupAttempt = startupAttempt
         errorMessage = nil
         finalRecognitionErrorMessage = nil
         transcript = ""
@@ -54,6 +57,7 @@ final class SpeechRecorder: ObservableObject {
         SFSpeechRecognizer.requestAuthorization { [weak self] status in
             DispatchQueue.main.async {
                 guard let self else { return }
+                guard self.startupAttempt == currentStartupAttempt else { return }
                 guard status == .authorized else {
                     self.isStarting = false
                     self.errorMessage = "请在系统设置中允许语音识别。"
@@ -61,6 +65,7 @@ final class SpeechRecorder: ObservableObject {
                 }
                 requestMicrophonePermission { granted in
                     DispatchQueue.main.async {
+                        guard self.startupAttempt == currentStartupAttempt else { return }
                         guard granted else {
                             self.isStarting = false
                             self.errorMessage = "请在系统设置中允许麦克风访问。"
@@ -326,6 +331,19 @@ final class SpeechRecorder: ObservableObject {
             try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
 #endif
         }
+    }
+
+    func cancel() {
+        startupAttempt += 1
+        tearDownAudioCapture(cancelRecognition: true)
+        transcript = ""
+        completedTranscript = ""
+        segmentTranscript = ""
+        completedAudioBufferCount = 0
+        completedAudibleSignal = false
+        recordingStartedAt = nil
+        errorMessage = nil
+        finalRecognitionErrorMessage = nil
     }
 }
 

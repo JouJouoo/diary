@@ -41,7 +41,8 @@ struct DiaryEntry: Identifiable, Codable {
         let transcript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         let transcriptSection = transcript.isEmpty ? "" : "\n\n## 口述原文\n\n\(transcript)"
         let mergedIDs = mergedEntryIDs.isEmpty ? "" : "\n\n<!-- merged-entry-ids: \(mergedEntryIDs.map(\.uuidString).joined(separator: ",")) -->"
-        return "# \(heading)\n\n_\(date)_\(tagLine)\n\n## 整理后的日记\n\n\(content.trimmingCharacters(in: .whitespacesAndNewlines))\(transcriptSection)\(mergedIDs)\n"
+        let creationTime = String(createdAt.timeIntervalSince1970)
+        return "# \(heading)\n\n<!-- created-at: \(creationTime) -->\n\n_\(date)_\(tagLine)\n\n## 整理后的日记\n\n\(content.trimmingCharacters(in: .whitespacesAndNewlines))\(transcriptSection)\(mergedIDs)\n"
     }
 
     var markdownFileName: String {

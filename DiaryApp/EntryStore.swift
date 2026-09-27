@@ -7,6 +7,7 @@ final class EntryStore: ObservableObject {
     @Published var entries: [DiaryEntry] = []
     @Published var isSyncing = false
     @Published var syncMessage = "尚未同步"
+    @Published var lastSingleUploadEntryID: UUID?
     private let fileURL: URL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         .appendingPathComponent("diary-entries.json")
 
@@ -26,6 +27,7 @@ final class EntryStore: ObservableObject {
     func upsert(_ entry: DiaryEntry) {
         if let index = entries.firstIndex(where: { $0.id == entry.id }) { entries[index] = entry }
         else { entries.insert(entry, at: 0) }
+        lastSingleUploadEntryID = nil
         entries.sort { $0.createdAt > $1.createdAt }
         save()
         saveMarkdown(entry)
@@ -66,6 +68,34 @@ final class EntryStore: ObservableObject {
         return true
     }
 
+    @discardableResult
+    func replaceMergedEntry(_ id: UUID, with entry: DiaryEntry) -> Bool {
+        guard let index = entries.firstIndex(where: { $0.id == id }),
+              !entries[index].mergedEntryIDs.isEmpty,
+              entry.id == id else { return false }
+        entries[index] = entry
+        entries.sort { $0.createdAt > $1.createdAt }
+        save()
+        saveMarkdown(entry)
+        return true
+    }
+
+    @discardableResult
+    func undoMerge(_ mergedID: UUID, restoring sourceEntries: [DiaryEntry]) -> Bool {
+        guard let mergedEntry = entries.first(where: { $0.id == mergedID }),
+              !mergedEntry.mergedEntryIDs.isEmpty,
+              Set(sourceEntries.map(\.id)).isSubset(of: Set(mergedEntry.mergedEntryIDs)) else { return false }
+        entries.removeAll { $0.id == mergedID }
+        entries.append(contentsOf: sourceEntries)
+        entries.sort { $0.createdAt > $1.createdAt }
+        save()
+        let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Markdown", isDirectory: true)
+        try? FileManager.default.removeItem(at: folder.appendingPathComponent(mergedEntry.markdownFileName))
+        sourceEntries.forEach(saveMarkdown)
+        return true
+    }
+
     func syncWithNutstore(direction: NutstoreSyncDirection = .both) async {
         guard !isSyncing else { return }
         let username = UserDefaults.standard.string(forKey: "nutstore_username")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -88,6 +118,31 @@ final class EntryStore: ObservableObject {
             syncMessage = "\(direction.action)完成 · 下载 \(result.downloadedCount) 篇 · 上传 \(result.uploadedCount) 篇\(skippedNote)\(unreadableNote) · \(Date().formatted(.dateTime.hour().minute()))"
         } catch {
             syncMessage = "同步失败：\(error.localizedDescription)"
+        }
+    }
+
+    func uploadEntryToNutstore(_ id: UUID) async {
+        guard !isSyncing else { return }
+        guard let entry = entries.first(where: { $0.id == id }) else {
+            syncMessage = "单篇上传失败：找不到这篇日记"
+            return
+        }
+        lastSingleUploadEntryID = id
+        let username = UserDefaults.standard.string(forKey: "nutstore_username")?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let password = NutstoreCredentialStore.password ?? ""
+        guard !username.isEmpty, !password.isEmpty else {
+            syncMessage = "单篇上传失败：请先填写坚果云账号和应用密码"
+            return
+        }
+
+        isSyncing = true
+        syncMessage = "正在上传这篇日记…"
+        defer { isSyncing = false }
+        do {
+            try await NutstoreWebDAV.upload(entry: entry, username: username, password: password)
+            syncMessage = "单篇上传完成 · \(Date().formatted(.dateTime.hour().minute()))"
+        } catch {
+            syncMessage = "单篇上传失败：\(error.localizedDescription)"
         }
     }
 
@@ -244,6 +299,8 @@ private enum NutstoreWebDAV {
         // survive cleanup or be uploaded back by another device.
         var remoteMarkdownByName: [String: String] = [:]
         var remoteEntryByName: [String: DiaryEntry] = [:]
+        var undoneRemoteSummaryNames = Set<String>()
+        let localEntryIDs = Set(localEntries.values.map(\.id))
         var supersededEntryIDs = Set(localEntries.values.flatMap(\.mergedEntryIDs))
         for remote in markdownFiles {
             let dayKey = String(remote.name.prefix(10))
@@ -252,12 +309,22 @@ private enum NutstoreWebDAV {
             remoteMarkdownByName[remote.name] = markdown
             if let entry = parse(markdown, dayKey: dayKey, fileName: remote.name) {
                 remoteEntryByName[remote.name] = entry
-                supersededEntryIDs.formUnion(entry.mergedEntryIDs)
+                let restoredSourceIDs = Set(entry.mergedEntryIDs).intersection(localEntryIDs)
+                if restoredSourceIDs.isEmpty {
+                    supersededEntryIDs.formUnion(entry.mergedEntryIDs)
+                } else {
+                    undoneRemoteSummaryNames.insert(remote.name)
+                    supersededEntryIDs.formUnion(entry.mergedEntryIDs.filter { !localEntryIDs.contains($0) })
+                }
             }
         }
 
         for remote in markdownFiles {
             remoteNames.insert(remote.name)
+            if undoneRemoteSummaryNames.contains(remote.name) {
+                if direction != .download { supersededRemoteFiles.append(remote) }
+                continue
+            }
             let dayKey = String(remote.name.prefix(10))
             guard dayKey.count == 10 else {
                 unreadableCount += 1
@@ -284,7 +351,14 @@ private enum NutstoreWebDAV {
             if let localEntry, remoteMarkdown == localEntry.markdown { continue }
 
             if direction != .upload && (localEntry == nil || remoteIsNewer) {
-                if let entry = remoteEntryByName[remote.name] {
+                if var entry = remoteEntryByName[remote.name] {
+                    // Older Markdown files contain only a calendar date. Keep a
+                    // known local creation time instead of replacing it with midnight.
+                    if !remoteMarkdown.contains("<!-- created-at:"),
+                       let localEntry,
+                       diaryDayKey(localEntry.createdAt) == dayKey {
+                        entry.createdAt = localEntry.createdAt
+                    }
                     localEntries[remote.name] = entry
                     try remoteMarkdown.write(to: localURL, atomically: true, encoding: .utf8)
                     downloadedCount += 1
@@ -312,6 +386,24 @@ private enum NutstoreWebDAV {
             }
         }
         return NutstoreSyncResult(entries: Array(localEntries.values), downloadedCount: downloadedCount, uploadedCount: uploadedCount, skippedCount: skippedCount, unreadableCount: unreadableCount)
+    }
+
+    static func upload(entry: DiaryEntry, username: String, password: String) async throws {
+        let endpoint = UserDefaults.standard.string(forKey: "nutstore_endpoint") ?? endpoint
+        guard let root = URL(string: endpoint), var components = URLComponents(url: root, resolvingAgainstBaseURL: false) else {
+            throw NutstoreError.invalidURL
+        }
+        if !components.percentEncodedPath.hasSuffix("/") { components.percentEncodedPath += "/" }
+        guard let normalizedRoot = components.url else { throw NutstoreError.invalidURL }
+        let folder = normalizedRoot.appendingPathComponent(folderName, isDirectory: true)
+        let (_, rootResponse) = try await request(normalizedRoot, method: "PROPFIND", username: username, password: password, depth: "0")
+        guard rootResponse.statusCode == 207 || rootResponse.statusCode == 200 else {
+            if rootResponse.statusCode == 403 { throw NutstoreError.forbidden("访问 WebDAV 根目录") }
+            throw NutstoreError.server("验证 WebDAV 根目录", rootResponse.statusCode)
+        }
+        try await ensureFolder(folder, username: username, password: password)
+        let destination = folder.appendingPathComponent(entry.markdownFileName)
+        try await upload(entry.markdown, to: destination, username: username, password: password)
     }
 
     private static func request(_ url: URL, method: String, username: String, password: String, body: Data? = nil, contentType: String? = nil, depth: String? = nil) async throws -> (Data, HTTPURLResponse) {
@@ -418,7 +510,17 @@ private enum NutstoreWebDAV {
             } ?? []
         guard !content.isEmpty else { return nil }
         let id = UUID(uuidString: String(fileName.dropFirst(11).dropLast(3))) ?? UUID()
-        return DiaryEntry(id: id, createdAt: date, title: title.isEmpty ? "今天的日记" : title, content: content, tags: Array(tags.prefix(2)), rawTranscript: transcript, mergedEntryIDs: mergedEntryIDs)
+        let createdAt = lines.first(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("<!-- created-at:") })
+            .flatMap { line -> Date? in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                let marker = "<!-- created-at:"
+                guard let markerRange = trimmed.range(of: marker),
+                      let end = trimmed.range(of: "-->")?.lowerBound else { return nil }
+                let value = trimmed[markerRange.upperBound..<end].trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let timestamp = Double(value) else { return nil }
+                return Date(timeIntervalSince1970: timestamp)
+            } ?? date
+        return DiaryEntry(id: id, createdAt: createdAt, title: title.isEmpty ? "今天的日记" : title, content: content, tags: Array(tags.prefix(2)), rawTranscript: transcript, mergedEntryIDs: mergedEntryIDs)
     }
 
     private static func dateFromKey(_ key: String) -> Date? {

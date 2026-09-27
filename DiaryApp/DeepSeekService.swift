@@ -116,14 +116,14 @@ struct DeepSeekService {
             .joined(separator: "\n\n")
     }
 
-    func polish(_ rawText: String, spokenAt: Date) async throws -> PolishedDiary {
+    func polish(_ rawText: String, spokenAt: Date, improvementPrompt: String = "") async throws -> PolishedDiary {
         AIPromptSettings.upgradeBuiltInPromptsIfNeeded()
         let compositionTask = AIPromptSettings.text(for: AIPromptSettings.compositionTaskKey, default: AIPromptSettings.compositionTaskDefault)
         let userText = """
         \(timeInstruction)
         本次口述开始时间：\(formattedTimestamp(spokenAt))
 
-        \(compositionTask)
+        \(compositionTask)\(improvementInstructions(improvementPrompt))
 
         以下是我的原始日记素材：
         \(rawText)
@@ -131,14 +131,14 @@ struct DeepSeekService {
         return try await generate(systemPrompt: writingSystemPrompt, userText: userText)
     }
 
-    func summarize(files: [String]) async throws -> PolishedDiary {
+    func summarize(files: [String], improvementPrompt: String = "") async throws -> PolishedDiary {
         AIPromptSettings.upgradeBuiltInPromptsIfNeeded()
         let summaryTask = AIPromptSettings.text(for: AIPromptSettings.summaryTaskKey, default: AIPromptSettings.summaryTaskDefault)
         let numberedFiles = files.enumerated().map { index, file in
             "日记文件 \(index + 1)：\n```markdown\n\(file)\n```"
         }.joined(separator: "\n\n")
         let userText = """
-        \(summaryTask)
+        \(summaryTask)\(improvementInstructions(improvementPrompt))
 
         以下是同一天的多份日记文件，请只合并这些文件：
         \(numberedFiles)
@@ -146,13 +146,13 @@ struct DeepSeekService {
         return try await generate(systemPrompt: writingSystemPrompt, userText: userText)
     }
 
-    func supplementDraft(draft: String, newRawText: String, spokenAt: Date) async throws -> PolishedDiary {
+    func supplementDraft(draft: String, newRawText: String, spokenAt: Date, improvementPrompt: String = "") async throws -> PolishedDiary {
         AIPromptSettings.upgradeBuiltInPromptsIfNeeded()
         let userText = """
         \(timeInstruction)
         本次补充口述开始时间：\(formattedTimestamp(spokenAt))
 
-        请把补充口述融入当前尚未保存的同一篇日记草稿，保留原稿中的事实，并依据新增内容调整叙事和标题。不要读取或合并其他已保存的日记文件。
+        请把补充口述融入当前尚未保存的同一篇日记草稿，保留原稿中的事实，并依据新增内容调整叙事和标题。不要读取或合并其他已保存的日记文件。\(improvementInstructions(improvementPrompt))
 
         当前日记草稿：
         \(draft)
@@ -161,6 +161,12 @@ struct DeepSeekService {
         \(newRawText)
         """
         return try await generate(systemPrompt: writingSystemPrompt, userText: userText)
+    }
+
+    private func improvementInstructions(_ prompt: String) -> String {
+        let trimmedPrompt = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPrompt.isEmpty else { return "" }
+        return "\n\n本次重新润色的改进建议，请优先遵循：\n\(trimmedPrompt)"
     }
 
     private func formattedTimestamp(_ date: Date) -> String {

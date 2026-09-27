@@ -2,8 +2,18 @@ import SwiftUI
 
 struct ContentView: View {
     private enum DiaryEditorTarget: String, Identifiable {
-        case currentDraft, savedEntry
+        case currentDraft
         var id: String { rawValue }
+    }
+
+    private enum ImprovementTarget: String, Identifiable, Equatable {
+        case currentDraft, mergedDiary
+        var id: String { rawValue }
+    }
+
+    private struct MergeUndoSnapshot {
+        let sourceEntries: [DiaryEntry]
+        let mergedEntryID: UUID
     }
 
     @StateObject private var store = EntryStore()
@@ -19,6 +29,7 @@ struct ContentView: View {
     @State private var polishedText = ""
     @State private var polishedTags: [String] = []
     @State private var diaryEditorTarget: DiaryEditorTarget?
+    @State private var improvementTarget: ImprovementTarget?
     @State private var showingDiaryList = false
     @State private var selectedDiary: DiaryEntry?
     @State private var originalDiaryBeforeEditing: DiaryEntry?
@@ -33,10 +44,13 @@ struct ContentView: View {
     @State private var pendingCalendarEntry: DiaryEntry?
     @State private var isSummarizingSelection = false
     @State private var mergeErrorMessage: String?
+    @State private var mergeUndoSnapshot: MergeUndoSnapshot?
     @State private var showingSettings = false
     @State private var errorMessage: String?
     @State private var saved = false
     @State private var sessionCreatedAt = Date()
+    @State private var draftGeneration = UUID()
+    @State private var didResetOnLaunch = false
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -79,6 +93,21 @@ struct ContentView: View {
                     showingCalendar = false
                 }
             }
+            .sheet(item: $improvementTarget) { target in
+                ImprovementPromptSheet(
+                    title: target == .mergedDiary ? "改进合并结果" : "改进整理稿",
+                    onCancel: { improvementTarget = nil },
+                    onSubmit: { prompt in
+                        improvementTarget = nil
+                        switch target {
+                        case .currentDraft:
+                            Task { await polishTranscript(improvementPrompt: prompt) }
+                        case .mergedDiary:
+                            Task { await repolishLastMerge(improvementPrompt: prompt) }
+                        }
+                    }
+                )
+            }
             .onChange(of: recorder.isFinalizing) { _, finalizing in
                 guard !finalizing, shouldPolish else { return }
                 shouldPolish = false
@@ -88,6 +117,7 @@ struct ContentView: View {
                 if let message { errorMessage = message }
             }
             .onDisappear { recorder.stop() }
+            .onAppear(perform: resetToInitialScreenOnLaunch)
             .task { await store.syncWithNutstore() }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active { Task { await store.syncWithNutstore() } }
@@ -128,20 +158,14 @@ struct ContentView: View {
         switch target {
         case .currentDraft:
             FullscreenDiaryEditor(title: $polishedTitle, content: $polishedText, tags: $polishedTags)
-        case .savedEntry:
-            if selectedDiary != nil {
-                FullscreenDiaryEditor(
-                    title: selectedDiaryTitle,
-                    content: selectedDiaryContent,
-                    tags: selectedDiaryTags,
-                    onSave: saveSelectedDiary
-                )
-            }
         }
     }
 
     private var groupedEntries: [(key: String, date: Date, entries: [DiaryEntry])] {
-        let sortedEntries = store.entries.sorted { $0.createdAt > $1.createdAt }
+        let sortedEntries = store.entries.sorted {
+            if $0.createdAt != $1.createdAt { return $0.createdAt > $1.createdAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
         let todayKey = diaryDayKey(Date())
         let todayEntries = sortedEntries.filter { diaryDayKey($0.createdAt) == todayKey }
         let earlierEntries = sortedEntries.filter { diaryDayKey($0.createdAt) != todayKey }
@@ -181,11 +205,15 @@ struct ContentView: View {
     private var header: some View {
         HStack {
             Button {
-                guard !recorder.isRecording, !recorder.isStarting, !isPolishing, !recorder.isFinalizing else { return }
-                selectedDiary = nil
-                withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) { showingDiaryList = true }
+                if sessionStarted {
+                    cancelCurrentSession()
+                } else {
+                    guard !recorder.isRecording, !recorder.isStarting, !isPolishing, !recorder.isFinalizing else { return }
+                    selectedDiary = nil
+                    withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) { showingDiaryList = true }
+                }
             } label: {
-                Image(systemName: "list.bullet")
+                Image(systemName: sessionStarted ? "xmark" : "list.bullet")
                     .font(.appSystem(size: 19, weight: .medium))
                     .foregroundStyle(.primary)
                     .frame(width: 52, height: 52)
@@ -193,8 +221,8 @@ struct ContentView: View {
                     .modifier(SystemGlass())
             }
             .buttonStyle(.plain)
-            .disabled(recorder.isRecording || recorder.isStarting || isPolishing || recorder.isFinalizing)
-            .accessibilityLabel("查看所有日记")
+            .accessibilityLabel(sessionStarted ? "取消本次记录并返回首页" : "查看所有日记")
+            .help(sessionStarted ? "取消本次记录" : "查看所有日记")
             Spacer()
             Button { showingSettings = true } label: {
                 Image(systemName: "gearshape")
@@ -331,7 +359,6 @@ struct ContentView: View {
                         .accessibilityLabel("选择日记进行删除")
                     }
                 } else {
-#if os(macOS)
                     if isEditingSelectedDiary {
                         HStack(spacing: 8) {
                             Button {
@@ -359,31 +386,39 @@ struct ContentView: View {
                             .accessibilityLabel("保存日记")
                         }
                     } else {
-                        Button {
-                            beginSelectedDiaryEditing()
-                        } label: {
-                            Image(systemName: "pencil")
-                                .font(.appSystem(size: 16, weight: .medium))
-                                .foregroundStyle(.primary)
-                                .frame(width: 44, height: 44)
-                                .modifier(SystemGlass())
+                        HStack(spacing: 8) {
+                            Button {
+                                guard let entry = selectedDiary else { return }
+                                Task { await store.uploadEntryToNutstore(entry.id) }
+                            } label: {
+                                if store.isSyncing {
+                                    ProgressView().controlSize(.small).frame(width: 44, height: 44)
+                                } else {
+                                    Image(systemName: "icloud.and.arrow.up")
+                                        .font(.appSystem(size: 16, weight: .medium))
+                                        .foregroundStyle(.primary)
+                                        .frame(width: 44, height: 44)
+                                        .modifier(SystemGlass())
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(store.isSyncing)
+                            .accessibilityLabel("仅上传这篇日记到云端")
+                            .help("仅上传这篇日记到云端")
+
+                            Button {
+                                beginSelectedDiaryEditing()
+                            } label: {
+                                Image(systemName: "pencil")
+                                    .font(.appSystem(size: 16, weight: .medium))
+                                    .foregroundStyle(.primary)
+                                    .frame(width: 44, height: 44)
+                                    .modifier(SystemGlass())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("编辑这篇日记")
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("编辑这篇日记")
                     }
-#else
-                    Button {
-                        diaryEditorTarget = .savedEntry
-                    } label: {
-                        Image(systemName: "pencil")
-                            .font(.appSystem(size: 16, weight: .medium))
-                            .foregroundStyle(.primary)
-                            .frame(width: 44, height: 44)
-                            .modifier(SystemGlass())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("编辑这篇日记")
-#endif
                 }
             }
             .padding(.horizontal, 24)
@@ -412,11 +447,57 @@ struct ContentView: View {
                     .frame(maxWidth: 1100, alignment: .leading)
                     .padding(.horizontal, 20)
                     .padding(.vertical, 10)
+            } else if let mergeErrorMessage {
+                Text(mergeErrorMessage)
+                    .font(.appSystem(.footnote, design: .rounded))
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: 1100, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 10)
             }
 
             if let entry = selectedDiary {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
+                        if store.lastSingleUploadEntryID == entry.id &&
+                            (store.syncMessage.hasPrefix("正在上传这篇日记") || store.syncMessage.hasPrefix("单篇上传")) {
+                            Text(store.syncMessage)
+                                .font(.appSystem(.footnote, design: .rounded))
+                                .foregroundStyle(store.syncMessage.hasPrefix("单篇上传失败") ? Color.red : Color.secondary)
+                        }
+                        if mergeUndoSnapshot?.mergedEntryID == entry.id {
+                            HStack(spacing: 10) {
+                                Label("合并结果", systemImage: "arrow.triangle.merge")
+                                    .font(.appSystem(.subheadline, design: .rounded, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                                Spacer(minLength: 8)
+                                Button {
+                                    undoLastMerge()
+                                } label: {
+                                    Label("撤回", systemImage: "arrow.uturn.backward")
+                                        .font(.appSystem(.subheadline, design: .rounded, weight: .medium))
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(isSummarizingSelection)
+                                .accessibilityLabel("撤回这次合并")
+
+                                Button {
+                                    improvementTarget = .mergedDiary
+                                } label: {
+                                    if isSummarizingSelection {
+                                        ProgressView().controlSize(.small)
+                                    } else {
+                                        Label("重新润色", systemImage: "sparkles")
+                                            .font(.appSystem(.subheadline, design: .rounded, weight: .medium))
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(isSummarizingSelection)
+                                .accessibilityLabel("让 AI 重新润色这次合并")
+                            }
+                            .padding(14)
+                            .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+                        }
                         Text(entry.createdAt.formatted(.dateTime.year().month(.wide).day().weekday(.wide).locale(Locale(identifier: "zh_CN"))))
                             .font(DiaryStyle.diaryDateFont)
                             .foregroundStyle(.secondary)
@@ -760,15 +841,7 @@ struct ContentView: View {
                         originalTranscriptPanel
                         polishedDiaryPanel
                     } else {
-                        Text(recorder.transcript.isEmpty
-                             ? (recorder.isStarting ? "正在准备语音识别…" : "你的口述文字会显示在这里。\n想到什么就慢慢说。")
-                             : recorder.transcript)
-                            .font(.appSystem(.body, design: .rounded))
-                            .lineSpacing(7)
-                            .foregroundStyle(recorder.transcript.isEmpty ? Color.secondary : Color.primary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(20)
-                            .background(DiaryStyle.secondaryPaper, in: RoundedRectangle(cornerRadius: 20))
+                        originalTranscriptPanel
                     }
                 }
                 .padding(.bottom, 8)
@@ -807,16 +880,20 @@ struct ContentView: View {
                 Button {
                     startSupplementaryRecording()
                 } label: {
-                    Label("补充口述", systemImage: "mic")
-                        .font(.appSystem(.subheadline, design: .rounded, weight: .medium))
+                    Image(systemName: "mic")
+                        .font(.appSystem(size: 15, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 34, height: 34)
+                        .background(Color.primary.opacity(0.06), in: Circle())
                 }
-                .modifier(SystemSecondaryButton())
+                .buttonStyle(.plain)
                 .disabled(isPolishing || recorder.isRecording || recorder.isStarting || recorder.isFinalizing)
                 .accessibilityLabel("补充口述原文")
+                .help("补充口述")
             }
 #if os(macOS)
-            ScrollView { transcriptText }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            transcriptText
+                .frame(maxWidth: .infinity, minHeight: 220, maxHeight: .infinity, alignment: .topLeading)
 #else
             transcriptText
 #endif
@@ -828,15 +905,22 @@ struct ContentView: View {
     }
 
     private var transcriptText: some View {
-        Text(displayedTranscript.isEmpty
-             ? (recorder.isStarting ? "正在准备语音识别…" : "你的口述文字会显示在这里。\n想到什么就慢慢说。")
-             : displayedTranscript)
-            .font(.appSystem(.body, design: .rounded))
-            .lineSpacing(7)
-            .foregroundStyle(displayedTranscript.isEmpty ? Color.secondary : Color.primary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .textSelection(.enabled)
-            .padding(18)
+        ZStack(alignment: .topLeading) {
+            if displayedTranscript.isEmpty {
+                Text(recorder.isStarting ? "正在准备语音识别…" : "你的口述文字会显示在这里，也可以直接修改。")
+                    .font(.appSystem(.body, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 8)
+            }
+            TextEditor(text: transcriptEditorBinding)
+                .font(.appSystem(.body, design: .rounded))
+                .lineSpacing(7)
+                .scrollContentBackground(.hidden)
+                .disabled(isPolishing || recorder.isRecording || recorder.isStarting || recorder.isFinalizing)
+                .accessibilityLabel("编辑口述原文")
+        }
+        .frame(maxWidth: .infinity, minHeight: 180, alignment: .topLeading)
     }
 
     private var polishedDiaryPanel: some View {
@@ -846,6 +930,19 @@ struct ContentView: View {
                     .font(.appSystem(.subheadline, design: .rounded, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 8)
+                Button {
+                    improvementTarget = .currentDraft
+                } label: {
+                    Image(systemName: "sparkles")
+                        .font(.appSystem(size: 15, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 34, height: 34)
+                        .background(Color.primary.opacity(0.06), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(displayedTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isPolishing || recorder.isRecording || recorder.isStarting || recorder.isFinalizing)
+                .accessibilityLabel("根据口述原文重新整理日记")
+                .help("重新整理")
 #if os(iOS)
                 Button {
                     diaryEditorTarget = .currentDraft
@@ -975,6 +1072,19 @@ struct ContentView: View {
             .joined(separator: "\n\n")
     }
 
+    private var transcriptEditorBinding: Binding<String> {
+        Binding(
+            get: { displayedTranscript },
+            set: { editedTranscript in
+                recorder.transcript = editedTranscript
+                if isSupplementingDraft {
+                    transcriptBeforeSupplement = ""
+                    isSupplementingDraft = false
+                }
+            }
+        )
+    }
+
     private func startSupplementaryRecording() {
         guard !polishedText.isEmpty, !isPolishing, !recorder.isRecording, !recorder.isStarting, !recorder.isFinalizing else { return }
         transcriptBeforeSupplement = recorder.transcript
@@ -1008,6 +1118,7 @@ struct ContentView: View {
     }
 
     private func beginDiary() {
+        draftGeneration = UUID()
         errorMessage = nil
         mergedWithEarlier = false
         polishedTitle = ""
@@ -1019,6 +1130,40 @@ struct ContentView: View {
         sessionCreatedAt = Date()
         withAnimation(.spring(response: 0.48, dampingFraction: 0.82)) { sessionStarted = true }
         recorder.start()
+    }
+
+    private func resetToInitialScreenOnLaunch() {
+        guard !didResetOnLaunch else { return }
+        didResetOnLaunch = true
+        recorder.cancel()
+        sessionStarted = false
+        showingDiaryList = false
+        showingSettings = false
+        showingCalendar = false
+        diaryEditorTarget = nil
+        selectedDiary = nil
+        pendingCalendarEntry = nil
+    }
+
+    private func cancelCurrentSession() {
+        draftGeneration = UUID()
+        shouldPolish = false
+        recorder.cancel()
+        isPolishing = false
+        sessionStarted = false
+        showingDiaryList = false
+        showingSettings = false
+        showingCalendar = false
+        diaryEditorTarget = nil
+        selectedDiary = nil
+        isSupplementingDraft = false
+        transcriptBeforeSupplement = ""
+        polishedTitle = ""
+        polishedText = ""
+        polishedTags = []
+        mergedWithEarlier = false
+        errorMessage = nil
+        saved = false
     }
 
     private func toggleRecording() {
@@ -1037,7 +1182,7 @@ struct ContentView: View {
     }
 
     @MainActor
-    private func polishTranscript() async {
+    private func polishTranscript(improvementPrompt: String = "") async {
         let rawText = recorder.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !rawText.isEmpty else {
             errorMessage = recorder.hasDetectedAudibleSignal
@@ -1047,17 +1192,19 @@ struct ContentView: View {
         }
         isPolishing = true
         errorMessage = nil
+        let generation = draftGeneration
         let spokenAt = recorder.recordingStartedAt ?? Date()
         do {
             let service = DeepSeekService()
             let result: PolishedDiary
             if isSupplementingDraft {
                 let previous = "此前标题（仅作线索，需重新选择）：\(polishedTitle)\n此前特别记忆：\(polishedTags.joined(separator: "、"))\n此前日记正文：\(polishedText)"
-                result = try await service.supplementDraft(draft: previous, newRawText: displayedTranscript, spokenAt: spokenAt)
+                result = try await service.supplementDraft(draft: previous, newRawText: displayedTranscript, spokenAt: spokenAt, improvementPrompt: improvementPrompt)
             } else {
-                result = try await service.polish(rawText, spokenAt: spokenAt)
+                result = try await service.polish(rawText, spokenAt: spokenAt, improvementPrompt: improvementPrompt)
                 mergedWithEarlier = false
             }
+            guard generation == draftGeneration else { return }
             polishedTitle = result.title
             polishedText = result.content
             polishedTags = result.tags
@@ -1067,13 +1214,14 @@ struct ContentView: View {
                 transcriptBeforeSupplement = ""
             }
         } catch {
-            errorMessage = error.localizedDescription
+            if generation == draftGeneration { errorMessage = error.localizedDescription }
         }
-        isPolishing = false
+        if generation == draftGeneration { isPolishing = false }
     }
 
     private func saveDiary() {
         guard !saved else { return }
+        draftGeneration = UUID()
         let entry = DiaryEntry(createdAt: sessionCreatedAt, title: polishedTitle, content: polishedText, tags: polishedTags, rawTranscript: displayedTranscript)
         store.add(entry)
         Task { await store.syncWithNutstore() }
@@ -1106,7 +1254,6 @@ struct ContentView: View {
     private func saveSelectedDiary() {
         guard let entry = selectedDiary else { return }
         store.upsert(entry)
-        Task { await store.syncWithNutstore() }
         isEditingSelectedDiary = false
         originalDiaryBeforeEditing = nil
     }
@@ -1149,8 +1296,55 @@ struct ContentView: View {
                 mergeErrorMessage = "选中的日记已发生变化，请重新选择后再试。"
                 return
             }
+            mergeUndoSnapshot = MergeUndoSnapshot(sourceEntries: orderedEntries, mergedEntryID: summary.id)
             selectedMergeEntryIDs = []
             isSelectingEntriesToMerge = false
+            isEditingSelectedDiary = false
+            originalDiaryBeforeEditing = nil
+            selectedDiary = summary
+            mergeErrorMessage = nil
+            await store.syncWithNutstore()
+        } catch {
+            mergeErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func undoLastMerge() {
+        guard !isSummarizingSelection, let snapshot = mergeUndoSnapshot else { return }
+        guard store.undoMerge(snapshot.mergedEntryID, restoring: snapshot.sourceEntries) else {
+            mergeErrorMessage = "找不到这次合并的结果，无法撤回。"
+            return
+        }
+        mergeUndoSnapshot = nil
+        mergeErrorMessage = nil
+        selectedDiary = nil
+        Task { await store.syncWithNutstore() }
+    }
+
+    @MainActor
+    private func repolishLastMerge(improvementPrompt: String) async {
+        guard !isSummarizingSelection,
+              let snapshot = mergeUndoSnapshot,
+              let existingSummary = store.entries.first(where: { $0.id == snapshot.mergedEntryID }) else { return }
+        isSummarizingSelection = true
+        defer { isSummarizingSelection = false }
+        let sourceEntries = snapshot.sourceEntries.sorted { $0.createdAt < $1.createdAt }
+        do {
+            let result = try await DeepSeekService().summarize(files: sourceEntries.map(\.markdown), improvementPrompt: improvementPrompt)
+            let revisedSummary = DiaryEntry(
+                id: existingSummary.id,
+                createdAt: existingSummary.createdAt,
+                title: result.title,
+                content: result.content,
+                tags: result.tags,
+                rawTranscript: existingSummary.rawTranscript,
+                mergedEntryIDs: existingSummary.mergedEntryIDs
+            )
+            guard store.replaceMergedEntry(existingSummary.id, with: revisedSummary) else {
+                mergeErrorMessage = "合并结果已发生变化，请刷新日记列表后重试。"
+                return
+            }
+            selectedDiary = revisedSummary
             mergeErrorMessage = nil
             await store.syncWithNutstore()
         } catch {
@@ -1300,5 +1494,63 @@ private struct FullscreenDiaryEditor: View {
             draftContent = content
             draftTags = tags.joined(separator: "，")
         }
+    }
+}
+
+private struct ImprovementPromptSheet: View {
+    let title: String
+    let onCancel: () -> Void
+    let onSubmit: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var prompt = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                Text(title)
+                    .font(.appSystem(.title3, design: .rounded, weight: .semibold))
+                Spacer()
+                Button("取消") {
+                    onCancel()
+                    dismiss()
+                }
+                .buttonStyle(.bordered)
+                Button("发送给 AI") {
+                    onSubmit(prompt.trimmingCharacters(in: .whitespacesAndNewlines))
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            Text("写下你希望改进的方向，例如调整语气、结构或细节。")
+                .font(.appSystem(.subheadline, design: .rounded))
+                .foregroundStyle(.secondary)
+
+            TextEditor(text: $prompt)
+                .font(.appSystem(.body, design: .rounded))
+                .scrollContentBackground(.hidden)
+                .padding(12)
+                .background(DiaryStyle.secondaryPaper, in: RoundedRectangle(cornerRadius: 14))
+                .overlay(alignment: .topLeading) {
+                    if prompt.isEmpty {
+                        Text("例如：保留原来的口语感，少一些抒情，多写清楚事情经过……")
+                            .font(.appSystem(.body, design: .rounded))
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 17)
+                            .padding(.vertical, 20)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .accessibilityLabel("输入重新润色的改进建议")
+        }
+        .padding(20)
+#if os(macOS)
+        .frame(minWidth: 520, minHeight: 360)
+#else
+        .frame(maxWidth: .infinity, minHeight: 340)
+#endif
+        .background(DiaryStyle.paper)
     }
 }
