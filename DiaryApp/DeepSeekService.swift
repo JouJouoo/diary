@@ -12,7 +12,6 @@ enum DeepSeekError: LocalizedError {
 }
 
 enum AIPromptSettings {
-    static let materialExtractionKey = "ai_prompt_material_extraction"
     static let timeUnderstandingKey = "ai_prompt_time_understanding"
     static let diaryStyleKey = "ai_prompt_diary_style"
     static let creativeWritingKey = "ai_prompt_creative_writing"
@@ -21,26 +20,13 @@ enum AIPromptSettings {
     static let specialMemoryTagKey = "ai_prompt_special_memory_tags"
     static let compositionTaskKey = "ai_prompt_composition_task"
     static let summaryTaskKey = "ai_prompt_daily_summary_task"
-    static let rewriteCopiedTextKey = "ai_prompt_rewrite_copied_text"
     private static let defaultsVersionKey = "ai_prompt_defaults_version"
 
-    static let materialExtractionDefault = """
-    从今天此前保存的日记和本次累计口述中提取创作素材，覆盖当天全部事件、动作、人物、时间、场景、细节、真实感受及心理线索（犹豫、愿望、回避、情绪变化）。口述顺序、分段时间只是线索；结合全部材料判断因果和逻辑，不把录音先后当成叙事顺序。合并重复，不漏旧内容，不复制旧段落，不编造事件、对话或事实；另列1—3条由具体经历引出的思考。
-    每次补充后都重新整理当天全部素材。标题只选一个最重要的重点，优先第一次、重要尝试、人生节点、特别经历或独特心境；后续出现更重要内容时改选。对素材明确支持的特别记忆生成1—2个短标签，否则返回空数组。各项写成简短笔记，不写成日记。
-    只输出 JSON：{"events":["事件与细节"],"innerLife":["心理与情绪线索"],"reflectionSeeds":["具体经历引出的思考"],"suggestedTitle":"唯一标题重点","milestoneTags":["特别记忆"]}。
-    """
+    static let timeUnderstandingDefault = "口述开始时间只用来理解其中的‘现在’‘此刻’；其他时间以素材为准，不要把全天事件都写成发生在口述开始时。"
 
-    static let timeUnderstandingDefault = """
-    口述开始时间只用来理解其中的“现在”“此刻”；其他时间以素材为准，不要把全天事件都写成发生在口述开始时。
-    """
+    static let titleGenerationDefault = "请从素材中选出最值得记住的一个核心重点，制作简短、具体、自然的日记标题。优先突出重要经历、第一次、人生节点、特别的人或关系、显著的情绪变化；不要把多件普通事情并列成标题，不要空泛概括、夸大素材，也不要重复日期。标题应忠实于素材，建议控制在24个汉字以内。"
 
-    static let titleGenerationDefault = """
-    请从当天全部素材中选出最值得记住的一个核心重点，制作简短、具体、自然的日记标题。优先突出重要经历、第一次、人生节点、特别的人或关系、显著的情绪变化；不要把多件普通事情并列成标题，不要空泛概括、夸大素材，也不要重复日期。标题应忠实于素材，建议控制在24个汉字以内。
-    """
-
-    static let specialMemoryTagDefault = """
-    请从当天全部素材中识别真正值得日后检索的特别记忆，并把它们制作成简短标签。优先选择明确发生的第一次、重要尝试、人生节点、特别经历或具有独特意义的人与事；日常琐事、普通情绪和没有事实依据的推断不要作为标签。最多给出两个标签，每个不超过12个汉字；没有明确特别记忆时返回空数组，不要为了凑数生成标签。
-    """
+    static let specialMemoryTagDefault = "请从素材中识别真正值得日后检索的特别记忆，并把它们制作成简短标签。优先选择明确发生的第一次、重要尝试、人生节点、特别经历或具有独特意义的人与事；日常琐事、普通情绪和没有事实依据的推断不要作为标签。最多给出两个标签，每个不超过12个汉字；没有明确特别记忆时返回空数组，不要为了凑数生成标签。"
 
     static let diaryStyleDefault = """
     你是一位善于理解生活、描写人物内心的日记作者。请把我提供的凌乱口述整理创作成一篇自然、真诚、有画面感的第一人称日记。
@@ -59,24 +45,15 @@ enum AIPromptSettings {
     """
 
     static let creativeWritingDefault = """
-
+    在素材支持的范围内写出人物的内心、犹豫、愿望和情绪变化，细致呈现心情如何随经历推进；不替人物判断，也不把推测写成事实。让思考和哲思从当天具体发生的事中自然生长，与动作、场景和感受相连，不空谈道理。可使用贴切、克制的比喻增强画面感，避免堆砌形容词和刻意煽情。
     """
 
-    static let titleAndOutputDefault = """
-    只输出 JSON：{"title":"日记标题","content":"完成后的日记正文","tags":[]}。title 使用标题制作提示词选出的重点；tags 使用特别记忆识别提示词确认的标签。JSON 外不要输出文字。
-    """
+    static let titleAndOutputDefault = "只输出 JSON：{\"title\":\"日记标题\",\"content\":\"完成后的日记正文\",\"tags\":[]}。title 使用标题制作提示词选出的重点；tags 使用特别记忆识别提示词确认的标签。JSON 外不要输出文字。"
 
-    static let compositionTaskDefault = """
-    以下是我的原始日记素材。请把这些素材当作创作依据，按上面的写作要求直接写成日记：
-    """
+    static let compositionTaskDefault = "以下是我的原始日记素材。请把这些素材当作创作依据，按上面的写作要求直接写成日记："
 
     static let summaryTaskDefault = """
-    你正在把同一天的多篇独立日记汇总成一篇完整日记。下面的素材按原记录顺序编号，可能包含重复、补充、跳跃或相互关联的内容。请先综合理解所有记录，再按事件的时间、因果和情绪变化重新组织成一篇自然连贯的第一人称日记。
-    必须覆盖每篇记录中独有的重要事件、动作、人物关系、时间、场景、细节和真实感受；相同内容可以合并，但不能因为某篇较短、较早或与其他篇重复就遗漏它提供的新信息。不要按记录逐篇拼接或罗列，也不要提到“汇总”“第几篇”或创作过程。忠实于全部素材，不编造事实。
-    """
-
-    static let rewriteCopiedTextDefault = """
-    上一稿照搬了旧日记长段落，请保留事实，彻底更换叙事结构和措辞重新创作。
+    输入是同一天已经保存的多份完整日记 Markdown 文件。请把这些文件合并创作成一篇日记，综合每个文件里的整理稿和口述原文，保留各篇独有的重要事件、动作、人物关系、时间、场景、细节和真实感受。重复内容可以合并，但不可遗漏某一篇提供的新信息；按事件因果和情绪变化重新组织，不要逐文件拼接、罗列，也不要加入新的口述或其他日期的日记。最终只产出一篇自然连贯的第一人称日记。
     """
 
     static func text(for key: String, default defaultValue: String) -> String {
@@ -86,7 +63,6 @@ enum AIPromptSettings {
 
     static func restoreDefaults() {
         let defaults: [(String, String)] = [
-            (materialExtractionKey, materialExtractionDefault),
             (timeUnderstandingKey, timeUnderstandingDefault),
             (diaryStyleKey, diaryStyleDefault),
             (creativeWritingKey, creativeWritingDefault),
@@ -94,67 +70,28 @@ enum AIPromptSettings {
             (titleGenerationKey, titleGenerationDefault),
             (specialMemoryTagKey, specialMemoryTagDefault),
             (compositionTaskKey, compositionTaskDefault),
-            (summaryTaskKey, summaryTaskDefault),
-            (rewriteCopiedTextKey, rewriteCopiedTextDefault)
+            (summaryTaskKey, summaryTaskDefault)
         ]
-        for (key, value) in defaults {
-            UserDefaults.standard.set(value, forKey: key)
-        }
+        for (key, value) in defaults { UserDefaults.standard.set(value, forKey: key) }
     }
 
     static func upgradeBuiltInPromptsIfNeeded() {
         let defaults = UserDefaults.standard
-        guard defaults.integer(forKey: defaultsVersionKey) < 2 else { return }
+        guard defaults.integer(forKey: defaultsVersionKey) < 3 else { return }
         let oldStyle = "你是善于理解生活、描写内心的日记作者。把口述当创作素材，先判断事件的因果、逻辑和情绪推进，再按自然的叙事结构重构成第一人称日记，不逐句润色或照录音顺序改写。重排重复、跳跃内容，写清重要动作、场景和细节；保留素材明确的事实、实际时间、人物关系和真实感受，可补足衔接但不编造新事件、对话、环境或经历。保持本人语气，不写成总结、鸡汤、新闻或小说。"
         let oldCreative = "让心理和情绪推动叙事：依据处境、行为、念头和选择写出心理变化；对回避、期待、迟疑、释然等保持含蓄，不能把推测写成事实。不要拘泥于口述的先后或录音时间，按事件因果和情绪变化重新编排。让一两处思考从当天经历自然生长，适度使用比喻、对照和细节照应。可以大胆改写结构和措辞，但不增加素材没有的事件或对话。"
         if defaults.string(forKey: diaryStyleKey) == oldStyle { defaults.set(diaryStyleDefault, forKey: diaryStyleKey) }
-        if defaults.string(forKey: creativeWritingKey) == oldCreative { defaults.set(creativeWritingDefault, forKey: creativeWritingKey) }
-        defaults.set(2, forKey: defaultsVersionKey)
+        let savedCreative = defaults.string(forKey: creativeWritingKey)
+        if savedCreative == oldCreative || savedCreative?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+            defaults.set(creativeWritingDefault, forKey: creativeWritingKey)
+        }
+        defaults.removeObject(forKey: "ai_prompt_material_extraction")
+        defaults.removeObject(forKey: "ai_prompt_rewrite_copied_text")
+        defaults.set(3, forKey: defaultsVersionKey)
     }
 }
 
 struct DeepSeekService {
-    private struct DiaryMaterials: Decodable {
-        let events: [String]
-        let innerLife: [String]
-        let reflectionSeeds: [String]
-        let suggestedTitle: String
-        let milestoneTags: [String]
-
-        private enum CodingKeys: String, CodingKey { case events, innerLife, reflectionSeeds, suggestedTitle, milestoneTags }
-
-        init(from decoder: Decoder) throws {
-            let values = try decoder.container(keyedBy: CodingKeys.self)
-            events = try values.decodeIfPresent([String].self, forKey: .events) ?? []
-            innerLife = try values.decodeIfPresent([String].self, forKey: .innerLife) ?? []
-            reflectionSeeds = try values.decodeIfPresent([String].self, forKey: .reflectionSeeds) ?? []
-            suggestedTitle = try values.decodeIfPresent(String.self, forKey: .suggestedTitle) ?? ""
-            milestoneTags = try values.decodeIfPresent([String].self, forKey: .milestoneTags) ?? []
-        }
-
-        var isEmpty: Bool { events.isEmpty && innerLife.isEmpty && reflectionSeeds.isEmpty }
-
-        var writingNotes: String {
-            func lines(_ items: [String]) -> String { items.map { "- \($0)" }.joined(separator: "\n") }
-            return """
-            今天发生的事和具体细节：
-            \(lines(events))
-
-            内心线索与心情变化：
-            \(lines(innerLife))
-
-            可以从具体经历生发的思考：
-            \(lines(reflectionSeeds))
-
-            今天唯一的标题重点：
-            \(suggestedTitle)
-
-            有明确依据的特别记忆标签：
-            \(lines(milestoneTags))
-            """
-        }
-    }
-
     private var diaryStyle: String {
         AIPromptSettings.text(for: AIPromptSettings.diaryStyleKey, default: AIPromptSettings.diaryStyleDefault)
     }
@@ -173,93 +110,61 @@ struct DeepSeekService {
     private var specialMemoryTagInstruction: String {
         AIPromptSettings.text(for: AIPromptSettings.specialMemoryTagKey, default: AIPromptSettings.specialMemoryTagDefault)
     }
+    private var writingSystemPrompt: String {
+        [diaryStyle, creativeInstruction, titleInstruction, specialMemoryTagInstruction, jsonInstruction]
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .joined(separator: "\n\n")
+    }
 
     func polish(_ rawText: String, spokenAt: Date) async throws -> PolishedDiary {
-        let materials = try await extractMaterials(existingDiary: nil, rawText: rawText, spokenAt: spokenAt)
-        return try await composeDiary(from: materials)
-    }
-
-    func summarize(records: [String], spokenAt: Date) async throws -> PolishedDiary {
-        let numberedRecords = records.enumerated().map { index, record in
-            "第\(index + 1)篇原始记录：\n\(record)"
-        }.joined(separator: "\n\n")
-        let materials = try await extractMaterials(existingDiary: nil, rawText: numberedRecords, spokenAt: spokenAt)
-        let firstDraft = try await composeDiary(from: materials, task: AIPromptSettings.text(
-            for: AIPromptSettings.summaryTaskKey,
-            default: AIPromptSettings.summaryTaskDefault
-        ))
-        guard records.contains(where: { copiesOldParagraph(from: $0, in: firstDraft.content) }) else { return firstDraft }
-        return (try? await composeDiary(from: materials, task: AIPromptSettings.text(
-            for: AIPromptSettings.summaryTaskKey,
-            default: AIPromptSettings.summaryTaskDefault
-        ), retryingCopiedParagraph: true)) ?? firstDraft
-    }
-
-    func merge(existingDiary: String, newRawText: String, spokenAt: Date) async throws -> PolishedDiary {
-        let materials = try await extractMaterials(existingDiary: existingDiary, rawText: newRawText, spokenAt: spokenAt)
-        let firstDraft = try await composeDiary(from: materials)
-        guard copiesOldParagraph(from: existingDiary, in: firstDraft.content) else { return firstDraft }
-        return (try? await composeDiary(from: materials, retryingCopiedParagraph: true)) ?? firstDraft
-    }
-
-    private func extractMaterials(existingDiary: String?, rawText: String, spokenAt: Date) async throws -> DiaryMaterials {
         AIPromptSettings.upgradeBuiltInPromptsIfNeeded()
-        let systemPrompt = AIPromptSettings.text(
-            for: AIPromptSettings.materialExtractionKey,
-            default: AIPromptSettings.materialExtractionDefault
-        ) + "\n\n【标题制作提示词】\n\(titleInstruction)\n\n【特别记忆识别与标签制作提示词】\n\(specialMemoryTagInstruction)"
+        let compositionTask = AIPromptSettings.text(for: AIPromptSettings.compositionTaskKey, default: AIPromptSettings.compositionTaskDefault)
         let userText = """
         \(timeInstruction)
-
-        今天此前保存的日记内容（也需要全部提取）：
-        \(existingDiary ?? "无")
-
         本次口述开始时间：\(formattedTimestamp(spokenAt))
 
-        今天这次记录累计的口述原文（可能包含多段）：
+        \(compositionTask)
+
+        以下是我的原始日记素材：
         \(rawText)
         """
-        let materials: DiaryMaterials = try await requestJSON(systemPrompt: systemPrompt, userText: userText, temperature: 0.2)
-        guard !materials.isEmpty else { throw DeepSeekError.invalidResponse }
-        return materials
+        return try await generate(systemPrompt: writingSystemPrompt, userText: userText)
     }
 
-    private func composeDiary(from materials: DiaryMaterials, task: String? = nil, retryingCopiedParagraph: Bool = false) async throws -> PolishedDiary {
-        let retryInstruction = retryingCopiedParagraph
-            ? "\n" + AIPromptSettings.text(
-                for: AIPromptSettings.rewriteCopiedTextKey,
-                default: AIPromptSettings.rewriteCopiedTextDefault
-            )
-            : ""
-        let compositionTask = task ?? AIPromptSettings.text(for: AIPromptSettings.compositionTaskKey, default: AIPromptSettings.compositionTaskDefault)
+    func summarize(files: [String]) async throws -> PolishedDiary {
+        AIPromptSettings.upgradeBuiltInPromptsIfNeeded()
+        let summaryTask = AIPromptSettings.text(for: AIPromptSettings.summaryTaskKey, default: AIPromptSettings.summaryTaskDefault)
+        let numberedFiles = files.enumerated().map { index, file in
+            "日记文件 \(index + 1)：\n```markdown\n\(file)\n```"
+        }.joined(separator: "\n\n")
         let userText = """
-        \(compositionTask)\(retryInstruction)
+        \(summaryTask)
 
-        \(materials.writingNotes)
+        以下是同一天的多份日记文件，请只合并这些文件：
+        \(numberedFiles)
         """
-        let draft = try await generate(systemPrompt: "\(diaryStyle)\n\(creativeInstruction)\n\(jsonInstruction)", userText: userText)
-        let suggestedTitle = materials.suggestedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
-        let title = !suggestedTitle.isEmpty && suggestedTitle.count <= 24 ? suggestedTitle : draft.title
-        var tags: [String] = []
-        for rawTag in materials.milestoneTags {
-            let tag = rawTag.trimmingCharacters(in: .whitespacesAndNewlines)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "#"))
-            guard !tag.isEmpty, tag.count <= 12, !tags.contains(tag) else { continue }
-            tags.append(tag)
-            if tags.count == 2 { break }
-        }
-        return PolishedDiary(title: title, content: draft.content, tags: tags)
+        return try await generate(systemPrompt: writingSystemPrompt, userText: userText)
     }
 
-    private func copiesOldParagraph(from oldDiary: String, in newDiary: String) -> Bool {
-        oldDiary.components(separatedBy: .newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { $0.count >= 40 }
-            .contains { newDiary.contains($0) }
+    func supplementDraft(draft: String, newRawText: String, spokenAt: Date) async throws -> PolishedDiary {
+        AIPromptSettings.upgradeBuiltInPromptsIfNeeded()
+        let userText = """
+        \(timeInstruction)
+        本次补充口述开始时间：\(formattedTimestamp(spokenAt))
+
+        请把补充口述融入当前尚未保存的同一篇日记草稿，保留原稿中的事实，并依据新增内容调整叙事和标题。不要读取或合并其他已保存的日记文件。
+
+        当前日记草稿：
+        \(draft)
+
+        本次补充口述：
+        \(newRawText)
+        """
+        return try await generate(systemPrompt: writingSystemPrompt, userText: userText)
     }
 
     private func formattedTimestamp(_ date: Date) -> String {
-        date.formatted(.dateTime.year().month(.twoDigits).day(.twoDigits).hour().minute().locale(Locale(identifier: "zh_CN")))
+        date.formatted(.dateTime.year().month(.twoDigits).day().hour().minute().locale(Locale(identifier: "zh_CN")))
     }
 
     private func generate(systemPrompt: String, userText: String) async throws -> PolishedDiary {

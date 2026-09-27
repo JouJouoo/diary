@@ -181,6 +181,13 @@ final class SpeechRecorder: ObservableObject {
                     self.segmentTimer?.invalidate()
                     self.segmentTimer = nil
                     if self.isRecording {
+                        if let error, Self.isRecognizerInitializationFailure(error) {
+                            let message = Self.userFacingMessage(for: error)
+                            self.errorMessage = message
+                            self.finalRecognitionErrorMessage = message
+                            self.tearDownAudioCapture(cancelRecognition: true)
+                            return
+                        }
                         self.continueRecordingAfterRecognitionEnds(using: recognizer, error: error)
                     } else {
                         if self.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, let error {
@@ -255,6 +262,12 @@ final class SpeechRecorder: ObservableObject {
         let nsError = error as NSError
         if nsError.domain == "kLSRErrorDomain" {
             switch nsError.code {
+            case 300:
+#if os(iOS) && targetEnvironment(simulator)
+                return "iOS 模拟器的系统语音识别无法初始化。请在真实 iPhone 上测试语音输入。"
+#else
+                return "系统语音识别无法初始化。请检查系统听写和语音识别权限后重试。"
+#endif
             case 201:
                 return "iPhone 系统听写未开启。请到“设置 > 通用 > 键盘”打开“启用听写”，并在“设置 > 隐私与安全性 > 语音识别”允许留白日记。"
             case 102:
@@ -267,6 +280,26 @@ final class SpeechRecorder: ObservableObject {
             return "iPhone 系统语音识别连接中断。请检查网络和系统听写设置后重试。"
         }
         return "iPhone 系统语音识别失败：\(error.localizedDescription)"
+    }
+
+    private static func diagnosticDescription(for error: Error) -> String {
+        var currentError: NSError? = error as NSError
+        var details: [String] = []
+        var visited = Set<String>()
+
+        while let nsError = currentError {
+            let identity = "\(nsError.domain):\(nsError.code):\(nsError.localizedDescription)"
+            guard visited.insert(identity).inserted else { break }
+            details.append("\(nsError.domain) (\(nsError.code)): \(nsError.localizedDescription)")
+            currentError = nsError.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+
+        return details.joined(separator: "\n")
+    }
+
+    private static func isRecognizerInitializationFailure(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == "kLSRErrorDomain" && nsError.code == 300
     }
 
     func stop() {

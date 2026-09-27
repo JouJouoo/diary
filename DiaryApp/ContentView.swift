@@ -21,55 +21,51 @@ struct ContentView: View {
     @State private var diaryEditorTarget: DiaryEditorTarget?
     @State private var showingDiaryList = false
     @State private var selectedDiary: DiaryEntry?
+    @State private var originalDiaryBeforeEditing: DiaryEntry?
+    @State private var isEditingSelectedDiary = false
+    @State private var editingSelectedTags = ""
     @State private var showingCalendar = false
+    @State private var isSelectingEntriesToMerge = false
+    @State private var selectedMergeEntryIDs: Set<UUID> = []
     @State private var pendingCalendarEntry: DiaryEntry?
+    @State private var isSummarizingSelection = false
+    @State private var mergeErrorMessage: String?
     @State private var showingSettings = false
     @State private var errorMessage: String?
     @State private var saved = false
     @State private var sessionCreatedAt = Date()
-    @State private var summarizingDayKey: String?
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
             ZStack {
                 DiaryStyle.paper.ignoresSafeArea()
+#if os(macOS)
                 if showingDiaryList {
                     savedDiaryBrowser
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .transition(.move(edge: .leading))
                         .zIndex(2)
                 } else {
-                    VStack(spacing: 0) {
-                        header
-                        Group {
-#if os(macOS)
-                            if recorder.isRecording || recorder.isStarting { macRecordingContent }
-                            else if sessionStarted { liveDiaryContent }
-                            else { welcomeContent }
-#else
-                            if sessionStarted { liveDiaryContent }
-                            else { welcomeContent }
-#endif
-                        }
-#if os(macOS)
-                        .frame(maxWidth: sessionStarted ? .infinity : 860)
-#else
-                        .frame(maxWidth: 860)
-#endif
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    mainPage
                 }
+#else
+                if showingDiaryList {
+                    savedDiaryBrowser
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .transition(.move(edge: .leading))
+                        .zIndex(2)
+                } else {
+                    mainPage
+                }
+#endif
             }
             .modifier(HiddenNavigationBar())
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if sessionStarted && !showingDiaryList { bottomControl }
+                if sessionStarted && !showingDiaryList && diaryEditorTarget == nil { bottomControl }
             }
             .sheet(isPresented: $showingSettings) { SettingsView(store: store) }
-#if os(macOS)
-            .sheet(item: $diaryEditorTarget) { diaryEditor(for: $0) }
-#else
+#if !os(macOS)
             .fullScreenCover(item: $diaryEditorTarget) { target in
                 diaryEditor(for: target)
             }
@@ -95,6 +91,29 @@ struct ContentView: View {
             }
             .modifier(DismissKeyboardOnOutsideTap())
         }
+    }
+
+    private var mainPage: some View {
+        VStack(spacing: 0) {
+            header
+            Group {
+#if os(macOS)
+                if recorder.isRecording || recorder.isStarting { macRecordingContent }
+                else if sessionStarted { liveDiaryContent }
+                else { welcomeContent }
+#else
+                if sessionStarted { liveDiaryContent }
+                else { welcomeContent }
+#endif
+            }
+#if os(macOS)
+            .frame(maxWidth: sessionStarted ? .infinity : 860)
+#else
+            .frame(maxWidth: 860)
+#endif
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var selectedDiaryTitle: Binding<String> {
@@ -136,6 +155,20 @@ struct ContentView: View {
         Binding(get: { selectedDiary?.tags ?? [] }, set: { updateSelectedDiary(tags: $0) })
     }
 
+    private var selectedDiaryTagsText: Binding<String> {
+        Binding(
+            get: { editingSelectedTags },
+            set: { value in
+                editingSelectedTags = value
+                updateSelectedDiary(tags: Array(value
+                    .split(whereSeparator: { $0 == "," || $0 == "，" })
+                    .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                    .prefix(2)))
+            }
+        )
+    }
+
     private var header: some View {
         HStack {
             Button {
@@ -144,7 +177,7 @@ struct ContentView: View {
                 withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) { showingDiaryList = true }
             } label: {
                 Image(systemName: "list.bullet")
-                    .font(.system(size: 19, weight: .medium))
+                    .font(.appSystem(size: 19, weight: .medium))
                     .foregroundStyle(.primary)
                     .frame(width: 52, height: 52)
                     .contentShape(Circle())
@@ -156,7 +189,7 @@ struct ContentView: View {
             Spacer()
             Button { showingSettings = true } label: {
                 Image(systemName: "gearshape")
-                    .font(.system(size: 17, weight: .medium))
+                    .font(.appSystem(size: 17, weight: .medium))
                     .foregroundStyle(.primary)
                     .frame(width: 46, height: 46)
                     .modifier(SystemGlass())
@@ -174,48 +207,133 @@ struct ContentView: View {
         VStack(spacing: 0) {
             HStack {
                 Button {
-                    if selectedDiary != nil {
+                    if isSelectingEntriesToMerge {
+                        cancelEntryMergeSelection()
+                    } else if isEditingSelectedDiary {
+                        cancelSelectedDiaryEditing()
+                    } else if selectedDiary != nil {
                         withAnimation(.easeInOut(duration: 0.22)) { selectedDiary = nil }
                     } else {
                         withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) { showingDiaryList = false }
                     }
                 } label: {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 16, weight: .semibold))
+                    Image(systemName: isSelectingEntriesToMerge ? "xmark" : "chevron.left")
+                        .font(.appSystem(size: 16, weight: .semibold))
                         .foregroundStyle(.primary)
                         .frame(width: 44, height: 44)
                         .modifier(SystemGlass())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(selectedDiary == nil ? "返回主页" : "返回日记列表")
+                .accessibilityLabel(isSelectingEntriesToMerge ? "取消合并选择" : (isEditingSelectedDiary ? "取消编辑" : (selectedDiary == nil ? "返回主页" : "返回日记列表")))
                 Spacer()
-                Text(selectedDiary == nil ? "所有日记" : "日记详情")
-                    .font(.system(.title3, design: .rounded, weight: .semibold))
+                Text(isSelectingEntriesToMerge ? (mergeAnchorDayKey.map { "合并日记 · \($0)" } ?? "选择要合并的日记") : (selectedDiary == nil ? "所有日记" : "日记详情"))
+                    .font(.appSystem(.title3, design: .rounded, weight: .semibold))
                 Spacer()
-                if selectedDiary == nil {
+                if selectedDiary == nil && isSelectingEntriesToMerge {
                     Button {
-                        showingCalendar = true
+                        Task { await summarizeEntries(selectedMergeEntries) }
                     } label: {
-                        Image(systemName: "calendar")
-                            .font(.system(size: 17, weight: .medium))
-                            .foregroundStyle(.primary)
-                            .frame(width: 44, height: 44)
-                            .modifier(SystemGlass())
+                        if isSummarizingSelection {
+                            ProgressView().controlSize(.small).frame(width: 68, height: 40)
+                        } else {
+                            Text("合并 \(selectedMergeEntryIDs.count)")
+                                .font(.appSystem(.subheadline, design: .rounded, weight: .semibold))
+                                .foregroundStyle(DiaryStyle.paper)
+                                .padding(.horizontal, 14)
+                                .frame(height: 40)
+                                .background(Color.primary, in: Capsule())
+                        }
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("按日历查找日记")
+                    .disabled(selectedMergeEntryIDs.count < 2 || isSummarizingSelection)
+                    .accessibilityLabel("合并已选的 \(selectedMergeEntryIDs.count) 篇日记")
+                } else if selectedDiary == nil {
+                    HStack(spacing: 8) {
+                        Button {
+                            showingCalendar = true
+                        } label: {
+                            Image(systemName: "calendar")
+                                .font(.appSystem(size: 17, weight: .medium))
+                                .foregroundStyle(.primary)
+                                .frame(width: 44, height: 44)
+                                .modifier(SystemGlass())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("按日历查找日记")
+
+                        Button {
+                            isSelectingEntriesToMerge = true
+                            selectedMergeEntryIDs = []
+                            mergeErrorMessage = nil
+                        } label: {
+                            if isSummarizingSelection {
+                                ProgressView().controlSize(.small).frame(width: 44, height: 44)
+                            } else {
+                                Image(systemName: "arrow.triangle.merge")
+                                    .font(.appSystem(size: 17, weight: .medium))
+                                    .foregroundStyle(.primary)
+                                    .frame(width: 44, height: 44)
+                                    .modifier(SystemGlass())
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(store.entries.count < 2 || isSummarizingSelection)
+                        .accessibilityLabel("选择日记进行合并")
+                    }
                 } else {
+#if os(macOS)
+                    if isEditingSelectedDiary {
+                        HStack(spacing: 8) {
+                            Button {
+                                cancelSelectedDiaryEditing()
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.appSystem(size: 15, weight: .medium))
+                                    .foregroundStyle(.primary)
+                                    .frame(width: 42, height: 42)
+                                    .modifier(SystemGlass())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("取消编辑")
+
+                            Button {
+                                saveSelectedDiary()
+                            } label: {
+                                Image(systemName: "checkmark")
+                                    .font(.appSystem(size: 15, weight: .semibold))
+                                    .foregroundStyle(DiaryStyle.paper)
+                                    .frame(width: 42, height: 42)
+                                    .background(.primary, in: Circle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("保存日记")
+                        }
+                    } else {
+                        Button {
+                            beginSelectedDiaryEditing()
+                        } label: {
+                            Image(systemName: "pencil")
+                                .font(.appSystem(size: 16, weight: .medium))
+                                .foregroundStyle(.primary)
+                                .frame(width: 44, height: 44)
+                                .modifier(SystemGlass())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("编辑这篇日记")
+                    }
+#else
                     Button {
                         diaryEditorTarget = .savedEntry
                     } label: {
                         Image(systemName: "pencil")
-                            .font(.system(size: 16, weight: .medium))
+                            .font(.appSystem(size: 16, weight: .medium))
                             .foregroundStyle(.primary)
                             .frame(width: 44, height: 44)
                             .modifier(SystemGlass())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("编辑这篇日记")
+#endif
                 }
             }
             .padding(.horizontal, 24)
@@ -223,34 +341,68 @@ struct ContentView: View {
             .padding(.bottom, 16)
             .overlay(alignment: .bottom) { Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 1) }
 
+            if isSelectingEntriesToMerge {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(mergeAnchorDayKey == nil
+                         ? "先选一篇日记确定日期，再选同一天的记录。"
+                         : "已选 \(selectedMergeEntryIDs.count) 篇；只能选择同一天的日记。")
+                    if let mergeErrorMessage {
+                        Text(mergeErrorMessage).foregroundStyle(.red)
+                    }
+                }
+                .font(.appSystem(.footnote, design: .rounded))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: 1100, alignment: .leading)
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
+            }
+
             if let entry = selectedDiary {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
                         Text(entry.createdAt.formatted(.dateTime.year().month(.wide).day().weekday(.wide).locale(Locale(identifier: "zh_CN"))))
                             .font(DiaryStyle.diaryDateFont)
                             .foregroundStyle(.secondary)
-                        Text(entry.title)
-                            .font(DiaryStyle.diaryTitleFont)
-                            .foregroundStyle(.primary)
-                        if !entry.tags.isEmpty {
-                            HStack(spacing: 6) {
-                                ForEach(Array(entry.tags.prefix(2).enumerated()), id: \.offset) { _, tag in
-                                    memoryTag(tag)
+                        if isEditingSelectedDiary {
+                            TextField("日记标题", text: selectedDiaryTitle)
+                                .font(DiaryStyle.diaryTitleFont)
+                                .textFieldStyle(.plain)
+                                .accessibilityLabel("编辑日记标题")
+                            TextField("标签（用逗号分隔）", text: selectedDiaryTagsText)
+                                .textFieldStyle(.roundedBorder)
+                                .accessibilityLabel("编辑日记标签")
+                            TextEditor(text: selectedDiaryContent)
+                                .font(DiaryStyle.diaryContentFont)
+                                .lineSpacing(DiaryStyle.diaryContentLineSpacing)
+                                .scrollContentBackground(.hidden)
+                                .frame(minHeight: 360)
+                                .padding(12)
+                                .background(DiaryStyle.secondaryPaper.opacity(0.62), in: RoundedRectangle(cornerRadius: 14))
+                                .accessibilityLabel("编辑日记正文")
+                        } else {
+                            Text(entry.title)
+                                .font(DiaryStyle.diaryTitleFont)
+                                .foregroundStyle(.primary)
+                            if !entry.tags.isEmpty {
+                                HStack(spacing: 6) {
+                                    ForEach(Array(entry.tags.prefix(2).enumerated()), id: \.offset) { _, tag in
+                                        memoryTag(tag)
+                                    }
                                 }
                             }
+                            Text(entry.content)
+                                .font(DiaryStyle.diaryContentFont)
+                                .lineSpacing(DiaryStyle.diaryContentLineSpacing)
+                                .foregroundStyle(.primary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        Text(entry.content)
-                            .font(DiaryStyle.diaryContentFont)
-                            .lineSpacing(DiaryStyle.diaryContentLineSpacing)
-                            .foregroundStyle(.primary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
                         if !entry.rawTranscript.isEmpty {
                             VStack(alignment: .leading, spacing: 10) {
                                 Label("口述原文", systemImage: "waveform")
-                                    .font(.system(.headline, design: .rounded))
+                                    .font(.appSystem(.headline, design: .rounded))
                                     .foregroundStyle(.secondary)
                                 Text(entry.rawTranscript)
-                                    .font(.system(.body, design: .rounded))
+                                    .font(.appSystem(.body, design: .rounded))
                                     .lineSpacing(6)
                                     .foregroundStyle(.secondary)
                                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -265,12 +417,12 @@ struct ContentView: View {
             } else if store.entries.isEmpty {
                 VStack(spacing: 12) {
                     Image(systemName: "book.closed")
-                        .font(.system(size: 34, weight: .regular))
+                        .font(.appSystem(size: 34, weight: .regular))
                         .foregroundStyle(.tertiary)
                     Text("还没有日记")
-                        .font(.system(.title3, design: .rounded, weight: .semibold))
+                        .font(.appSystem(.title3, design: .rounded, weight: .semibold))
                     Text(store.syncMessage)
-                        .font(.system(.body, design: .rounded))
+                        .font(.appSystem(.body, design: .rounded))
                         .foregroundStyle(store.syncMessage.hasPrefix("同步失败") ? Color.red : Color.secondary)
                         .multilineTextAlignment(.center)
                     HStack(spacing: 12) {
@@ -289,9 +441,20 @@ struct ContentView: View {
                         Section {
                             ForEach(group.entries) { entry in
                                 Button {
-                                    withAnimation(.easeInOut(duration: 0.22)) { selectedDiary = entry }
+                                    if isSelectingEntriesToMerge {
+                                        toggleMergeSelection(entry)
+                                    } else {
+                                        isEditingSelectedDiary = false
+                                        originalDiaryBeforeEditing = nil
+                                        withAnimation(.easeInOut(duration: 0.22)) { selectedDiary = entry }
+                                    }
                                 } label: {
                             HStack(spacing: 14) {
+                                if isSelectingEntriesToMerge {
+                                    Image(systemName: selectedMergeEntryIDs.contains(entry.id) ? "checkmark.circle.fill" : "circle")
+                                        .font(.appSystem(size: 22))
+                                        .foregroundStyle(selectedMergeEntryIDs.contains(entry.id) ? Color.accentColor : Color.secondary)
+                                }
                                 VStack(alignment: .leading, spacing: 6) {
                                     HStack(spacing: 8) {
                                         Text(entry.createdAt.formatted(.dateTime.year().month(.twoDigits).day(.twoDigits).locale(Locale(identifier: "zh_CN"))))
@@ -320,41 +483,35 @@ struct ContentView: View {
                                     }
                                 }
                                 Spacer(minLength: 8)
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundStyle(.tertiary)
+                                if isSelectingEntriesToMerge {
+                                    if mergeAnchorDayKey != nil && diaryDayKey(entry.createdAt) != mergeAnchorDayKey {
+                                        Text("不同日期")
+                                            .font(.appSystem(.caption2, design: .rounded))
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                } else {
+                                    Image(systemName: "chevron.right")
+                                        .font(.appSystem(size: 12, weight: .semibold))
+                                        .foregroundStyle(.tertiary)
+                                }
                             }
                             .padding(.horizontal, 14)
                             .padding(.vertical, 13)
                             .background(DiaryStyle.secondaryPaper.opacity(0.62), in: RoundedRectangle(cornerRadius: 14))
                             .contentShape(Rectangle())
                         }
+                        .disabled(isSelectingEntriesToMerge && mergeAnchorDayKey != nil && diaryDayKey(entry.createdAt) != mergeAnchorDayKey)
+                        .opacity(isSelectingEntriesToMerge && mergeAnchorDayKey != nil && diaryDayKey(entry.createdAt) != mergeAnchorDayKey ? 0.4 : 1)
                         .buttonStyle(.plain)
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                         .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
                             }
                         } header: {
-                            HStack {
-                                Text(group.date.formatted(.dateTime.year().month(.twoDigits).day(.twoDigits).locale(Locale(identifier: "zh_CN"))))
-                                Spacer()
-                                if group.entries.count > 1 {
-                                    Button {
-                                        Task { await summarizeDay(group.entries) }
-                                    } label: {
-                                        if summarizingDayKey == group.key {
-                                            ProgressView().controlSize(.small)
-                                        } else {
-                                            Label("汇总 \(group.entries.count) 篇", systemImage: "arrow.triangle.merge")
-                                        }
-                                    }
-                                    .buttonStyle(.plain)
-                                    .disabled(summarizingDayKey != nil)
-                                }
-                            }
-                            .font(.system(.subheadline, design: .rounded, weight: .medium))
-                            .foregroundStyle(.secondary)
-                            .textCase(nil)
+                            Text(group.date.formatted(.dateTime.year().month(.twoDigits).day(.twoDigits).locale(Locale(identifier: "zh_CN"))))
+                                .font(.appSystem(.subheadline, design: .rounded, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .textCase(nil)
                         }
                     }
                 }
@@ -368,7 +525,9 @@ struct ContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
         .modifier(SwipeBackGesture {
-            if selectedDiary != nil { selectedDiary = nil }
+            if isSelectingEntriesToMerge { cancelEntryMergeSelection() }
+            else if isEditingSelectedDiary { cancelSelectedDiaryEditing() }
+            else if selectedDiary != nil { selectedDiary = nil }
             else { withAnimation(.spring(response: 0.42, dampingFraction: 0.88)) { showingDiaryList = false } }
         })
     }
@@ -377,10 +536,10 @@ struct ContentView: View {
         VStack(spacing: 18) {
             Spacer()
             Text("把今天说给我听")
-                .font(.system(.largeTitle, design: .rounded, weight: .medium))
+                .font(.appSystem(.largeTitle, design: .rounded, weight: .medium))
                 .foregroundStyle(.primary)
             Text("不用想好怎么写，开始说就好。")
-                .font(.system(.body, design: .rounded))
+                .font(.appSystem(.body, design: .rounded))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             Button(action: beginDiary) {
@@ -390,7 +549,7 @@ struct ContentView: View {
                         .overlay { Circle().strokeBorder(Color.primary.opacity(0.09), lineWidth: 1) }
                         .frame(width: 164, height: 164)
                     Image(systemName: "mic.fill")
-                        .font(.system(size: 48, weight: .regular))
+                        .font(.appSystem(size: 48, weight: .regular))
                         .foregroundStyle(.primary)
                 }
                 .frame(width: 204, height: 204)
@@ -403,14 +562,14 @@ struct ContentView: View {
             .keyboardShortcut("r", modifiers: [.command, .shift])
             .padding(.top, 18)
             Text("轻点开始口述")
-                .font(.system(.subheadline, design: .rounded))
+                .font(.appSystem(.subheadline, design: .rounded))
                 .foregroundStyle(.secondary)
             if let errorMessage {
-                Text(errorMessage).font(.footnote).foregroundStyle(.red).multilineTextAlignment(.center)
+                Text(errorMessage).font(.appSystem(.footnote)).foregroundStyle(.red).multilineTextAlignment(.center)
             }
             Spacer()
             Text("你的日记会先保存在这台设备上")
-                .font(.system(.footnote, design: .rounded))
+                .font(.appSystem(.footnote, design: .rounded))
                 .foregroundStyle(.tertiary)
                 .padding(.bottom, 16)
         }
@@ -423,20 +582,20 @@ struct ContentView: View {
             Spacer(minLength: 24)
             VStack(spacing: 24) {
                 Text("今天的口述")
-                    .font(.system(size: 32, weight: .semibold, design: .rounded))
+                    .font(.appSystem(size: 32, weight: .semibold, design: .rounded))
                     .foregroundStyle(.primary)
                     .frame(maxWidth: .infinity, alignment: .center)
 
                 if recorder.transcript.isEmpty {
                     VStack(spacing: 12) {
                         Image(systemName: "waveform")
-                            .font(.system(size: 30, weight: .regular))
+                            .font(.appSystem(size: 30, weight: .regular))
                             .foregroundStyle(.tertiary)
                         Text(recorder.isStarting ? "正在准备语音识别…" : "正在聆听")
-                            .font(.system(.title3, design: .rounded, weight: .medium))
+                            .font(.appSystem(.title3, design: .rounded, weight: .medium))
                             .foregroundStyle(.secondary)
                         Text("想到哪里，就从哪里说起。")
-                            .font(.system(.body, design: .rounded))
+                            .font(.appSystem(.body, design: .rounded))
                             .foregroundStyle(.tertiary)
                     }
                     .frame(maxWidth: .infinity)
@@ -444,7 +603,7 @@ struct ContentView: View {
                 } else {
                     ScrollView {
                         Text(recorder.transcript)
-                            .font(.system(size: 21, design: .rounded))
+                            .font(.appSystem(size: 21, design: .rounded))
                             .lineSpacing(9)
                             .foregroundStyle(.primary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -468,10 +627,10 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(polishedText.isEmpty ? "今天的口述" : "原文与整理稿")
 #if os(macOS)
-                .font(.system(size: polishedText.isEmpty ? 32 : 26, weight: .semibold, design: .rounded))
+                .font(.appSystem(size: polishedText.isEmpty ? 32 : 26, weight: .semibold, design: .rounded))
                 .frame(maxWidth: .infinity, alignment: polishedText.isEmpty ? .center : .leading)
 #else
-                .font(.system(.title2, design: .rounded, weight: .medium))
+                .font(.appSystem(.title2, design: .rounded, weight: .medium))
 #endif
                 .foregroundStyle(.primary)
                 .padding(.top, 12)
@@ -499,7 +658,7 @@ struct ContentView: View {
                         Text(recorder.transcript.isEmpty
                              ? (recorder.isStarting ? "正在准备语音识别…" : "你的口述文字会显示在这里。\n想到什么就慢慢说。")
                              : recorder.transcript)
-                            .font(.system(.body, design: .rounded))
+                            .font(.appSystem(.body, design: .rounded))
                             .lineSpacing(7)
                             .foregroundStyle(recorder.transcript.isEmpty ? Color.secondary : Color.primary)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -515,13 +674,13 @@ struct ContentView: View {
                 HStack(spacing: 10) {
                     ProgressView()
                     Text(recorder.isFinalizing ? "正在完成语音转写…" : "DeepSeek 正在整理日记…")
-                        .font(.system(.subheadline, design: .rounded))
+                        .font(.appSystem(.subheadline, design: .rounded))
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
             }
             if let errorMessage {
-                Text(errorMessage).font(.footnote).foregroundStyle(.red).multilineTextAlignment(.center)
+                Text(errorMessage).font(.appSystem(.footnote)).foregroundStyle(.red).multilineTextAlignment(.center)
             }
             Spacer(minLength: 0)
         }
@@ -537,14 +696,14 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Label("本次口述原文", systemImage: "waveform")
-                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                    .font(.appSystem(.subheadline, design: .rounded, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 12)
                 Button {
                     startSupplementaryRecording()
                 } label: {
                     Label("补充口述", systemImage: "mic")
-                        .font(.system(.subheadline, design: .rounded, weight: .medium))
+                        .font(.appSystem(.subheadline, design: .rounded, weight: .medium))
                 }
                 .modifier(SystemSecondaryButton())
                 .disabled(isPolishing || recorder.isRecording || recorder.isStarting || recorder.isFinalizing)
@@ -567,7 +726,7 @@ struct ContentView: View {
         Text(displayedTranscript.isEmpty
              ? (recorder.isStarting ? "正在准备语音识别…" : "你的口述文字会显示在这里。\n想到什么就慢慢说。")
              : displayedTranscript)
-            .font(.system(.body, design: .rounded))
+            .font(.appSystem(.body, design: .rounded))
             .lineSpacing(7)
             .foregroundStyle(displayedTranscript.isEmpty ? Color.secondary : Color.primary)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -579,14 +738,15 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Label(mergedWithEarlier ? "合并后的今日日记" : "整理后的日记", systemImage: "text.alignleft")
-                    .font(.system(.subheadline, design: .rounded, weight: .semibold))
+                    .font(.appSystem(.subheadline, design: .rounded, weight: .semibold))
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 8)
+#if os(iOS)
                 Button {
                     diaryEditorTarget = .currentDraft
                 } label: {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
-                        .font(.system(size: 14, weight: .medium))
+                        .font(.appSystem(size: 14, weight: .medium))
                         .foregroundStyle(.secondary)
                         .frame(width: 34, height: 34)
                         .background(Color.primary.opacity(0.06), in: Circle())
@@ -594,14 +754,15 @@ struct ContentView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("全屏编辑日记")
                 .help("全屏编辑日记")
+#endif
             }
             TextField("日记标题", text: $polishedTitle)
-                .font(.system(.title3, design: .serif, weight: .semibold))
+                .font(.appSystem(.title3, design: .serif, weight: .semibold))
                 .foregroundStyle(.primary)
                 .textFieldStyle(.plain)
                 .accessibilityLabel("编辑日记标题")
             TextEditor(text: $polishedText)
-                .font(.system(.body, design: .serif))
+                .font(.appSystem(.body, design: .serif))
                 .lineSpacing(8)
                 .foregroundStyle(.primary)
                 .scrollContentBackground(.hidden)
@@ -626,12 +787,13 @@ struct ContentView: View {
     }
 
     private var bottomControl: some View {
+            
         HStack {
             Spacer(minLength: 0)
             if !polishedText.isEmpty && !recorder.isRecording && !recorder.isStarting && !recorder.isFinalizing && !isPolishing {
                 Button(action: saveDiary) {
                     Image(systemName: "square.and.arrow.down")
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.appSystem(size: 17, weight: .semibold))
                         .foregroundStyle(DiaryStyle.paper)
                         .frame(width: 42, height: 42)
                         .background(.primary, in: Circle())
@@ -647,7 +809,7 @@ struct ContentView: View {
                 VStack(spacing: 12) {
                     Button(action: bottomButtonAction) {
                         Image(systemName: recorder.isRecording ? "stop.fill" : "mic.fill")
-                            .font(.system(size: 23, weight: .semibold))
+                            .font(.appSystem(size: 23, weight: .semibold))
                             .foregroundStyle(.primary)
                             .frame(width: 72, height: 72)
                             .modifier(SystemGlass())
@@ -660,7 +822,7 @@ struct ContentView: View {
                     .accessibilityLabel(recorder.isRecording ? "结束口述" : "开始口述")
 
                     Text(bottomButtonTitle)
-                        .font(.system(.body, design: .rounded, weight: .medium))
+                        .font(.appSystem(.body, design: .rounded, weight: .medium))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
@@ -669,13 +831,13 @@ struct ContentView: View {
                 Button(action: bottomButtonAction) {
                     HStack(spacing: 12) {
                         Image(systemName: recorder.isRecording ? "stop.fill" : "mic.fill")
-                            .font(.system(size: 20, weight: .semibold))
+                            .font(.appSystem(size: 20, weight: .semibold))
                             .frame(width: 58, height: 58)
                             .modifier(SystemGlass())
                             .overlay(Circle().strokeBorder(Color.primary.opacity(0.10), lineWidth: 1))
                             .matchedGeometryEffect(id: "recording-button", in: recordingButtonAnimation)
                         Text(bottomButtonTitle)
-                            .font(.system(.subheadline, design: .rounded, weight: .medium))
+                            .font(.appSystem(.subheadline, design: .rounded, weight: .medium))
                     }
                     .foregroundStyle(.primary)
                     .frame(maxWidth: .infinity)
@@ -786,7 +948,7 @@ struct ContentView: View {
             let result: PolishedDiary
             if isSupplementingDraft {
                 let previous = "此前标题（仅作线索，需重新选择）：\(polishedTitle)\n此前特别记忆：\(polishedTags.joined(separator: "、"))\n此前日记正文：\(polishedText)"
-                result = try await service.merge(existingDiary: previous, newRawText: displayedTranscript, spokenAt: spokenAt)
+                result = try await service.supplementDraft(draft: previous, newRawText: displayedTranscript, spokenAt: spokenAt)
             } else {
                 result = try await service.polish(rawText, spokenAt: spokenAt)
                 mergedWithEarlier = false
@@ -840,21 +1002,33 @@ struct ContentView: View {
         guard let entry = selectedDiary else { return }
         store.upsert(entry)
         Task { await store.syncWithNutstore() }
+        isEditingSelectedDiary = false
+        originalDiaryBeforeEditing = nil
     }
 
-    private func summarizeDay(_ dayEntries: [DiaryEntry]) async {
-        guard dayEntries.count > 1, let first = dayEntries.min(by: { $0.createdAt < $1.createdAt }) else { return }
-        let key = diaryDayKey(first.createdAt)
-        summarizingDayKey = key
-        defer { summarizingDayKey = nil }
-        let orderedEntries = dayEntries.sorted { $0.createdAt < $1.createdAt }
-        let records = orderedEntries.map { entry in
-            let transcript = entry.rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-            if transcript.isEmpty { return "现有日记正文：\n\(entry.content)" }
-            return "口述原文：\n\(transcript)\n\n此前整理稿：\n\(entry.content)"
-        }
+    private func beginSelectedDiaryEditing() {
+        guard let entry = selectedDiary else { return }
+        originalDiaryBeforeEditing = entry
+        editingSelectedTags = entry.tags.joined(separator: "，")
+        isEditingSelectedDiary = true
+    }
+
+    private func cancelSelectedDiaryEditing() {
+        if let originalDiaryBeforeEditing { selectedDiary = originalDiaryBeforeEditing }
+        isEditingSelectedDiary = false
+        originalDiaryBeforeEditing = nil
+    }
+
+    private func summarizeEntries(_ selectedEntries: [DiaryEntry]) async {
+        guard selectedEntries.count > 1,
+              let first = selectedEntries.min(by: { $0.createdAt < $1.createdAt }),
+              Set(selectedEntries.map { diaryDayKey($0.createdAt) }).count == 1 else { return }
+        isSummarizingSelection = true
+        defer { isSummarizingSelection = false }
+        let orderedEntries = selectedEntries.sorted { $0.createdAt < $1.createdAt }
+        let files = orderedEntries.map(\.markdown)
         do {
-            let result = try await DeepSeekService().summarize(records: records, spokenAt: first.createdAt)
+            let result = try await DeepSeekService().summarize(files: files)
             let transcript = orderedEntries
                 .map { $0.rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? $0.content : $0.rawTranscript }
                 .joined(separator: "\n\n")
@@ -864,12 +1038,43 @@ struct ContentView: View {
                 content: result.content,
                 tags: result.tags,
                 rawTranscript: transcript,
-                mergedEntryIDs: dayEntries.flatMap { $0.mergedEntryIDs + [$0.id] }
+                mergedEntryIDs: orderedEntries.flatMap { $0.mergedEntryIDs + [$0.id] }
             )
-            store.replaceDay(first.createdAt, with: summary)
+            guard store.replaceSelectedEntries(Set(orderedEntries.map(\.id)), with: summary) else {
+                mergeErrorMessage = "选中的日记已发生变化，请重新选择后再试。"
+                return
+            }
+            selectedMergeEntryIDs = []
+            isSelectingEntriesToMerge = false
+            mergeErrorMessage = nil
+            await store.syncWithNutstore()
         } catch {
-            errorMessage = error.localizedDescription
+            mergeErrorMessage = error.localizedDescription
         }
+    }
+
+    private var selectedMergeEntries: [DiaryEntry] {
+        store.entries.filter { selectedMergeEntryIDs.contains($0.id) }
+    }
+
+    private var mergeAnchorDayKey: String? {
+        selectedMergeEntries.first.map { diaryDayKey($0.createdAt) }
+    }
+
+    private func toggleMergeSelection(_ entry: DiaryEntry) {
+        guard !isSummarizingSelection else { return }
+        if selectedMergeEntryIDs.contains(entry.id) {
+            selectedMergeEntryIDs.remove(entry.id)
+        } else if mergeAnchorDayKey == nil || diaryDayKey(entry.createdAt) == mergeAnchorDayKey {
+            selectedMergeEntryIDs.insert(entry.id)
+        }
+    }
+
+    private func cancelEntryMergeSelection() {
+        guard !isSummarizingSelection else { return }
+        isSelectingEntriesToMerge = false
+        selectedMergeEntryIDs = []
+        mergeErrorMessage = nil
     }
 }
 
@@ -892,13 +1097,13 @@ private struct FullscreenDiaryEditor: View {
         NavigationStack {
             VStack(spacing: 12) {
                 TextField("日记标题", text: $draftTitle)
-                    .font(.system(.title2, design: .serif, weight: .semibold))
+                    .font(.appSystem(.title2, design: .serif, weight: .semibold))
                     .textFieldStyle(.plain)
                     .focused($focusedField, equals: .title)
                     .accessibilityLabel("编辑日记标题")
 
                 TextEditor(text: $draftContent)
-                    .font(.system(.body, design: .serif))
+                    .font(.appSystem(.body, design: .serif))
                     .lineSpacing(8)
                     .scrollContentBackground(.hidden)
                     .focused($focusedField, equals: .content)
@@ -906,7 +1111,7 @@ private struct FullscreenDiaryEditor: View {
                     .overlay(alignment: .topLeading) {
                         if draftContent.isEmpty {
                             Text("在这里修改整理后的日记…")
-                                .font(.system(.body, design: .serif))
+                                .font(.appSystem(.body, design: .serif))
                                 .foregroundStyle(.tertiary)
                                 .padding(.top, 8)
                                 .padding(.leading, 5)
@@ -915,7 +1120,7 @@ private struct FullscreenDiaryEditor: View {
                     }
 
                 TextField("特别记忆标签（用逗号分隔）", text: $draftTags)
-                    .font(.system(.subheadline, design: .rounded))
+                    .font(.appSystem(.subheadline, design: .rounded))
                     .textFieldStyle(.roundedBorder)
                     .focused($focusedField, equals: .tags)
                     .accessibilityLabel("编辑日记标签")
@@ -927,6 +1132,9 @@ private struct FullscreenDiaryEditor: View {
             .navigationTitle("编辑今日日记")
             .modifier(InlineNavigationTitle())
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text("编辑今日日记").font(.appSystem(.headline))
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
                 }

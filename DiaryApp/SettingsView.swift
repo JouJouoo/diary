@@ -24,6 +24,9 @@ struct SettingsView: View {
                 .navigationTitle("设置")
                 .modifier(InlineNavigationTitle())
                 .toolbar {
+                    ToolbarItem(placement: .principal) {
+                        Text("设置").font(.appSystem(.headline))
+                    }
                     ToolbarItem(placement: .confirmationAction) { Button("完成") { dismiss() } }
                 }
         }
@@ -50,7 +53,7 @@ struct SettingsView: View {
                             .textFieldStyle(.roundedBorder)
                     }
                     Text("填写后即可把口述内容整理成日记。API Key 只保存在这台设备上。")
-                        .font(.footnote)
+                        .font(.appSystem(.footnote))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     NavigationLink {
@@ -60,14 +63,14 @@ struct SettingsView: View {
                             Image(systemName: "text.quote")
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("编辑全部 AI 提示词")
-                                    .font(.system(.body, design: .rounded, weight: .medium))
+                                    .font(.appSystem(.body, design: .rounded, weight: .medium))
                                 Text("按素材、写作、标题和重写规则分组调整")
-                                    .font(.footnote)
+                                    .font(.appSystem(.footnote))
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
                             Image(systemName: "chevron.right")
-                                .font(.caption)
+                                .font(.appSystem(.caption))
                                 .foregroundStyle(.tertiary)
                         }
                         .contentShape(Rectangle())
@@ -124,17 +127,17 @@ struct SettingsView: View {
                     }
                     .disabled(store.isSyncing)
                     Text(store.syncMessage)
-                        .font(.footnote)
+                        .font(.appSystem(.footnote))
                         .foregroundStyle(store.syncMessage.hasPrefix("同步失败") ? Color.red : Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Text("只传输本机没有或明确较新的日记；两端同一天内容不同、时间又无法判断时会跳过，避免覆盖。")
-                        .font(.footnote)
+                        .font(.appSystem(.footnote))
                         .foregroundStyle(.secondary)
                     if let credentialError {
-                        Text(credentialError).font(.footnote).foregroundStyle(.red)
+                        Text(credentialError).font(.appSystem(.footnote)).foregroundStyle(.red)
                     }
                     Text("Mac 版和 iPhone 版的同步配置分开保存。请在两端填写同一坚果云账号和应用密码。打开应用或保存日记后会自动双向同步；也可以手动选择下载或上传。日记存放在坚果云根目录的“留白日记”文件夹中。密码仅保存在本机钥匙串。")
-                        .font(.footnote)
+                        .font(.appSystem(.footnote))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -142,7 +145,7 @@ struct SettingsView: View {
                 macSettingsSection("语音与隐私") {
                     Label("语音识别由 Apple 系统提供", systemImage: "waveform")
                     Text("日记以 Markdown 格式保存在本机和已配置的坚果云，每篇同时包含整理稿和口述原文。使用 AI 整理或汇总时，相关口述内容会发送至你填写的 DeepSeek 接口。")
-                        .font(.footnote)
+                        .font(.appSystem(.footnote))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -161,7 +164,7 @@ struct SettingsView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(title)
-                .font(.system(.headline, design: .rounded, weight: .semibold))
+                .font(.appSystem(.headline, design: .rounded, weight: .semibold))
             content()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -175,7 +178,7 @@ struct SettingsView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
-                .font(.system(.subheadline, design: .rounded, weight: .medium))
+                .font(.appSystem(.subheadline, design: .rounded, weight: .medium))
                 .foregroundStyle(.secondary)
             content()
                 .frame(maxWidth: .infinity)
@@ -243,13 +246,13 @@ struct SettingsView: View {
                     Button("上传到云端") { Task { await store.syncWithNutstore(direction: .upload) } }
                         .disabled(store.isSyncing)
                     Text(store.syncMessage)
-                        .font(.footnote)
+                        .font(.appSystem(.footnote))
                         .foregroundStyle(store.syncMessage.hasPrefix("同步失败") ? Color.red : Color.secondary)
                     Text("只传输本机没有或明确较新的日记；两端同一天内容不同、时间又无法判断时会跳过，避免覆盖。")
-                        .font(.footnote)
+                        .font(.appSystem(.footnote))
                         .foregroundStyle(.secondary)
                     if let credentialError {
-                        Text(credentialError).font(.footnote).foregroundStyle(.red)
+                        Text(credentialError).font(.appSystem(.footnote)).foregroundStyle(.red)
                     }
                 } header: {
                     Text("坚果云同步")
@@ -263,7 +266,7 @@ struct SettingsView: View {
                 Section {
                     Label("语音识别由 Apple 系统提供", systemImage: "waveform")
                     Text("日记以 Markdown 格式保存在本机和已配置的坚果云，每篇同时包含整理稿和口述原文。使用 AI 整理或汇总时，相关口述内容会发送至你填写的 DeepSeek 接口。")
-                        .font(.system(size: 13))
+                        .font(.appSystem(size: 13))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -272,8 +275,6 @@ struct SettingsView: View {
 }
 
 private struct AIPromptEditorView: View {
-    @AppStorage(AIPromptSettings.materialExtractionKey)
-    private var materialExtraction = AIPromptSettings.materialExtractionDefault
     @AppStorage(AIPromptSettings.timeUnderstandingKey)
     private var timeUnderstanding = AIPromptSettings.timeUnderstandingDefault
     @AppStorage(AIPromptSettings.diaryStyleKey)
@@ -290,19 +291,11 @@ private struct AIPromptEditorView: View {
     private var compositionTask = AIPromptSettings.compositionTaskDefault
     @AppStorage(AIPromptSettings.summaryTaskKey)
     private var summaryTask = AIPromptSettings.summaryTaskDefault
-    @AppStorage(AIPromptSettings.rewriteCopiedTextKey)
-    private var rewriteCopiedText = AIPromptSettings.rewriteCopiedTextDefault
     @State private var isConfirmingReset = false
 
     var body: some View {
         Form {
             Section {
-                promptEditor(
-                    title: "素材提取与整日合并",
-                    explanation: "决定怎样读取今天此前的日记和本次口述，提取事件、心理、哲思、标题候选与标签。",
-                    text: $materialExtraction,
-                    minHeight: 300
-                )
                 promptEditor(
                     title: "日记标题制作",
                     explanation: "单独决定怎样从当天素材中选出一个值得记住的重点并制作标题。",
@@ -322,7 +315,7 @@ private struct AIPromptEditorView: View {
                     minHeight: 90
                 )
             } header: {
-                Text("第一步 · 理解素材")
+                Text("提示词 · 标题、标签与时间")
             }
 
             Section {
@@ -340,13 +333,13 @@ private struct AIPromptEditorView: View {
                 )
                 promptEditor(
                     title: "成稿任务",
-                    explanation: "告诉 AI 怎样把提炼后的笔记重新组织成完整日记。",
+                    explanation: "告诉 AI 如何依据本次口述原文创作一篇独立日记。",
                     text: $compositionTask,
                     minHeight: 110
                 )
                 promptEditor(
-                    title: "同一天多篇记录汇总",
-                    explanation: "专用于手动汇总多篇日记，要求覆盖各篇独有的重要内容，再创作成一篇完整日记。",
+                    title: "汇总同一天的日记文件",
+                    explanation: "专用于把当天多份已保存的 Markdown 日记文件合并成一篇。",
                     text: $summaryTask,
                     minHeight: 200
                 )
@@ -361,14 +354,8 @@ private struct AIPromptEditorView: View {
                     text: $titleAndOutput,
                     minHeight: 170
                 )
-                promptEditor(
-                    title: "发现照搬旧段落时重新创作",
-                    explanation: "当新稿直接复制旧日记长段落时，第二次创作会额外使用这段要求。",
-                    text: $rewriteCopiedText,
-                    minHeight: 110
-                )
             } header: {
-                Text("第三步 · 标题、标签与重写")
+                Text("返回格式")
             }
 
             Section {
@@ -382,6 +369,11 @@ private struct AIPromptEditorView: View {
         .formStyle(.grouped)
         .navigationTitle("AI 提示词")
         .modifier(InlineNavigationTitle())
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                Text("AI 提示词").font(.appSystem(.headline))
+            }
+        }
         .onAppear { AIPromptSettings.upgradeBuiltInPromptsIfNeeded() }
         .alert("恢复默认提示词？", isPresented: $isConfirmingReset) {
             Button("取消", role: .cancel) {}
@@ -401,13 +393,13 @@ private struct AIPromptEditorView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(.system(.headline, design: .rounded, weight: .semibold))
+                .font(.appSystem(.headline, design: .rounded, weight: .semibold))
             Text(explanation)
-                .font(.footnote)
+                .font(.appSystem(.footnote))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             TextEditor(text: text)
-                .font(.system(.body, design: .rounded))
+                .font(.appSystem(.body, design: .rounded))
                 .frame(minHeight: minHeight)
                 .padding(8)
                 .scrollContentBackground(.hidden)

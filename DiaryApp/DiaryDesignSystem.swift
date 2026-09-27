@@ -5,49 +5,85 @@ import AppKit
 import UIKit
 #endif
 
+extension Font {
+    static func appSystem(_ style: TextStyle, design: Design = .default, weight: Weight = .regular) -> Font {
+        #if os(iOS) && targetEnvironment(simulator)
+        return .custom("Noto Sans SC", size: style.fallbackSize, relativeTo: style).weight(weight)
+        #else
+        return .system(style, design: design, weight: weight)
+        #endif
+    }
+
+    static func appSystem(size: CGFloat, weight: Weight = .regular, design: Design = .default) -> Font {
+        #if os(iOS) && targetEnvironment(simulator)
+        return .custom("Noto Sans SC", size: size).weight(weight)
+        #else
+        return .system(size: size, weight: weight, design: design)
+        #endif
+    }
+}
+
+private extension Font.TextStyle {
+    var fallbackSize: CGFloat {
+        switch self {
+        case .largeTitle: 34
+        case .title: 28
+        case .title2: 22
+        case .title3: 20
+        case .headline, .body: 17
+        case .callout: 16
+        case .subheadline: 15
+        case .footnote: 13
+        case .caption: 12
+        case .caption2: 11
+        @unknown default: 17
+        }
+    }
+}
+
 enum DiaryStyle {
     static let ink = Color.primary
     static let muted = Color.secondary
     static var historyDateFont: Font {
 #if os(macOS)
-        .system(.body, design: .rounded)
+        .appSystem(.body, design: .rounded)
 #else
-        .system(.footnote, design: .rounded)
+        .appSystem(.footnote, design: .rounded)
 #endif
     }
     static var historyTitleFont: Font {
 #if os(macOS)
-        .system(.title3, design: .rounded, weight: .semibold)
+        .appSystem(.title3, design: .rounded, weight: .semibold)
 #else
-        .system(.body, design: .rounded, weight: .medium)
+        .appSystem(.body, design: .rounded, weight: .medium)
 #endif
     }
     static var historyTagFont: Font {
 #if os(macOS)
-        .system(.subheadline, design: .rounded, weight: .medium)
+        .appSystem(.subheadline, design: .rounded, weight: .medium)
 #else
-        .system(.caption2, design: .rounded, weight: .medium)
+        .appSystem(.caption2, design: .rounded, weight: .medium)
 #endif
     }
     static var diaryDateFont: Font {
 #if os(macOS)
-        .system(.title3, design: .rounded)
+        .appSystem(.title3, design: .rounded)
 #else
-        .system(.subheadline, design: .rounded)
+        .appSystem(.subheadline, design: .rounded)
 #endif
     }
     static var diaryTitleFont: Font {
 #if os(macOS)
-        .system(size: 40, weight: .medium, design: .serif)
+        .appSystem(size: 40, weight: .medium, design: .serif)
 #else
-        .system(.largeTitle, design: .serif, weight: .medium)
+        .appSystem(.largeTitle, design: .serif, weight: .medium)
 #endif
     }
     static var diaryContentFont: Font {
 #if os(macOS)
-        .system(size: 20, design: .serif)
+        .appSystem(size: 20, design: .serif)
 #else
-        .system(.body, design: .serif)
+        .appSystem(.body, design: .serif)
 #endif
     }
     static var diaryContentLineSpacing: CGFloat {

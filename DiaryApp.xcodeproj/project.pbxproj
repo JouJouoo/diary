@@ -8,6 +8,8 @@
 
 /* Begin PBXBuildFile section */
 		A10000000000000000000001 /* DiaryApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* DiaryApp.swift */; };
+		C10000000000000000000001 /* NotoSansSC.ttf in Resources */ = {isa = PBXBuildFile; fileRef = C10000000000000000000002 /* NotoSansSC.ttf */; platformFilter = ios; };
+		D10000000000000000000001 /* OFL-NotoSansSC.txt in Resources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000002 /* OFL-NotoSansSC.txt */; platformFilter = ios; };
 		A10000000000000000000013 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000014 /* Assets.xcassets */; };
 		A10000000000000000000018 /* DiaryApp.swift in Sources (Mac) */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* DiaryApp.swift */; };
 		A10000000000000000000019 /* Assets.xcassets in Resources (Mac) */ = {isa = PBXBuildFile; fileRef = A10000000000000000000014 /* Assets.xcassets */; };
@@ -38,6 +40,8 @@
 		A10000000000000000000016 /* DiaryAppMac.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = DiaryAppMac.entitlements; sourceTree = "<group>"; };
 		A10000000000000000000017 /* DiaryAppMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DiaryAppMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000029 /* SpeechRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechRecorder.swift; sourceTree = "<group>"; };
+		C10000000000000000000002 /* NotoSansSC.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = Fonts/NotoSansSC.ttf; sourceTree = "<group>"; };
+		D10000000000000000000002 /* OFL-NotoSansSC.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = Fonts/OFL-NotoSansSC.txt; sourceTree = "<group>"; };
 		B10000000000000000000020 /* DiaryModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiaryModels.swift; sourceTree = "<group>"; };
 		B10000000000000000000021 /* EntryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EntryStore.swift; sourceTree = "<group>"; };
 		B10000000000000000000022 /* DeepSeekService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeepSeekService.swift; sourceTree = "<group>"; };
@@ -70,6 +74,8 @@
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000002 /* DiaryApp.swift */,
+				C10000000000000000000002 /* NotoSansSC.ttf */,
+				D10000000000000000000002 /* OFL-NotoSansSC.txt */,
 				A10000000000000000000029 /* SpeechRecorder.swift */,
 				B10000000000000000000026 /* SettingsView.swift */,
 				B10000000000000000000025 /* DiaryCalendarPicker.swift */,
@@ -198,6 +204,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				A10000000000000000000013 /* Assets.xcassets in Resources */,
+				C10000000000000000000001 /* NotoSansSC.ttf in Resources */,
+				D10000000000000000000001 /* OFL-NotoSansSC.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

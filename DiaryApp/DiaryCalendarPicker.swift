@@ -88,7 +88,7 @@ struct DiaryCalendarPicker: View {
                     monthButton(systemName: "chevron.left", offset: -1, label: "上个月")
                     Spacer()
                     Text(displayedMonth.formatted(.dateTime.year().month(.wide).locale(Locale(identifier: "zh_CN"))))
-                        .font(.system(.headline, design: .rounded, weight: .semibold))
+                        .font(.appSystem(.headline, design: .rounded, weight: .semibold))
                     Spacer()
                     monthButton(systemName: "chevron.right", offset: 1, label: "下个月")
                 }
@@ -97,7 +97,7 @@ struct DiaryCalendarPicker: View {
                 LazyVGrid(columns: columns, spacing: 6) {
                     ForEach(weekdays.indices, id: \.self) { index in
                         Text(weekdays[index])
-                            .font(.system(.caption, design: .rounded, weight: .medium))
+                            .font(.appSystem(.caption, design: .rounded, weight: .medium))
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity)
                             .frame(height: 24)
@@ -113,13 +113,13 @@ struct DiaryCalendarPicker: View {
 
                 if let entry = entry(on: selectedDate) {
                     Label("\(selectedDate.formatted(.dateTime.month(.twoDigits).day(.twoDigits).locale(Locale(identifier: "zh_CN")))) · \(entry.title)", systemImage: "book.closed")
-                        .font(.system(.subheadline, design: .rounded, weight: .medium))
+                        .font(.appSystem(.subheadline, design: .rounded, weight: .medium))
                         .foregroundStyle(.primary)
                         .lineLimit(2)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     Label("有小点的日期保存过日记", systemImage: "circle.fill")
-                        .font(.system(.subheadline, design: .rounded))
+                        .font(.appSystem(.subheadline, design: .rounded))
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -130,6 +130,9 @@ struct DiaryCalendarPicker: View {
             .navigationTitle("日记日历")
             .modifier(InlineNavigationTitle())
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Text("日记日历").font(.appSystem(.headline))
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") { dismiss() }
                 }
@@ -156,7 +159,7 @@ struct DiaryCalendarPicker: View {
             withAnimation(.easeInOut(duration: 0.18)) { displayedMonth = monthStart }
         } label: {
             Image(systemName: systemName)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.appSystem(size: 13, weight: .semibold))
                 .foregroundStyle(.primary)
                 .frame(width: 38, height: 38)
                 .modifier(SystemGlass())
@@ -174,7 +177,7 @@ struct DiaryCalendarPicker: View {
         } label: {
             VStack(spacing: 2) {
                 Text(date.formatted(.dateTime.day()))
-                    .font(.system(.subheadline, design: .rounded, weight: isSelected ? .semibold : .regular))
+                    .font(.appSystem(.subheadline, design: .rounded, weight: isSelected ? .semibold : .regular))
                     .foregroundStyle(isSelected ? DiaryStyle.paper : Color.primary)
                     .frame(width: 36, height: 36)
                     .background {

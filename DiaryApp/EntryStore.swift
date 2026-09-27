@@ -31,18 +31,26 @@ final class EntryStore: ObservableObject {
         saveMarkdown(entry)
     }
 
-    func replaceDay(_ date: Date, with entry: DiaryEntry) {
-        let replacedEntries = entries(on: date)
-        entries.removeAll { Calendar.current.isDate($0.createdAt, inSameDayAs: date) }
+    @discardableResult
+    func replaceSelectedEntries(_ ids: Set<UUID>, with entry: DiaryEntry) -> Bool {
+        guard ids.count > 1 else { return false }
+        let selected = entries.filter { ids.contains($0.id) }
+        guard selected.count == ids.count,
+              Set(selected.map { diaryDayKey($0.createdAt) }).count == 1,
+              diaryDayKey(selected[0].createdAt) == diaryDayKey(entry.createdAt) else { return false }
+
+        entries.removeAll { ids.contains($0.id) }
         entries.insert(entry, at: 0)
         entries.sort { $0.createdAt > $1.createdAt }
         save()
         saveMarkdown(entry)
+
         let folder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Markdown", isDirectory: true)
-        for replaced in replacedEntries where replaced.id != entry.id {
+        for replaced in selected {
             try? FileManager.default.removeItem(at: folder.appendingPathComponent(replaced.markdownFileName))
         }
+        return true
     }
 
     func syncWithNutstore(direction: NutstoreSyncDirection = .both) async {
@@ -114,17 +122,30 @@ enum NutstoreCredentialStore {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                     kSecAttrService as String: service,
                                     kSecAttrAccount as String: account]
-        SecItemDelete(query as CFDictionary)
-        guard !password.isEmpty else { return }
+        guard !password.isEmpty else {
+            let status = SecItemDelete(query as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                throw NutstoreError.keychain(status)
+            }
+            return
+        }
+
+        let attributes = [kSecValueData as String: Data(password.utf8)] as CFDictionary
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes)
+        if updateStatus == errSecSuccess { return }
+        guard updateStatus == errSecItemNotFound else {
+            throw NutstoreError.keychain(updateStatus)
+        }
+
         var item = query
         item[kSecValueData as String] = Data(password.utf8)
-        let status = SecItemAdd(item as CFDictionary, nil)
-        guard status == errSecSuccess else { throw NutstoreError.keychain }
+        let addStatus = SecItemAdd(item as CFDictionary, nil)
+        guard addStatus == errSecSuccess else { throw NutstoreError.keychain(addStatus) }
     }
 }
 
 private enum NutstoreError: LocalizedError {
-    case invalidURL, unauthorized(String), folderCreationDenied, forbidden(String), server(String, Int), keychain, invalidFile
+    case invalidURL, unauthorized(String), folderCreationDenied, forbidden(String), server(String, Int), keychain(OSStatus), invalidFile
     var errorDescription: String? {
         switch self {
         case .invalidURL: return "坚果云 WebDAV 地址无效。"
@@ -132,7 +153,16 @@ private enum NutstoreError: LocalizedError {
         case .folderCreationDenied: return "账号已连上坚果云，但应用无法自动创建“留白日记”文件夹。请在坚果云根目录手动新建同名文件夹，再点立即同步。"
         case .forbidden(let operation): return "账号已连上坚果云，但没有权限\(operation)。"
         case .server(let operation, let status): return "坚果云\(operation)失败（\(status)）。"
-        case .keychain: return "坚果云密码保存失败，请重试。"
+        case .keychain(let status):
+            let reason: String
+            switch status {
+            case errSecInteractionNotAllowed: reason = "设备当前不允许访问钥匙串，请解锁设备后重试。"
+            case errSecNotAvailable: reason = "系统钥匙串暂时不可用，请稍后重试。"
+            case errSecMissingEntitlement: reason = "应用没有访问钥匙串的权限。"
+            case errSecDuplicateItem: reason = "密码记录已存在，请重新打开设置后重试。"
+            default: reason = "系统暂时无法写入钥匙串（错误码 \(status)）。"
+            }
+            return "坚果云密码保存失败：\(reason)"
         case .invalidFile: return "云端日记文件无法读取。"
         }
     }
